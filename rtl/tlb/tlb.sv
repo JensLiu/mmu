@@ -20,6 +20,8 @@
 
 /* TLB follows SV39 specification*/
 
+`IGNORE_WARNINGS_BEGIN
+
 module tlb 
 import mmu_pkg::*;
 #(
@@ -393,3 +395,5 @@ assign pmu_tlb_access_o = pmu_tlb_access;
 assign pmu_tlb_miss_o = pmu_tlb_miss;
 
 endmodule
+
+`IGNORE_WARNINGS_END

@@ -18,6 +18,8 @@
  * under the License.
  */
 
+`IGNORE_WARNINGS_BEGIN
+
 module pseudoLRU #(
       parameter int unsigned ENTRIES = 8
   )(
@@ -156,3 +158,5 @@ end
 
 
 endmodule
+
+`IGNORE_WARNINGS_END

@@ -20,6 +20,8 @@
 
 package mmu_pkg;
 
+`IGNORE_WARNINGS_BEGIN
+
 // SV39 Parameters
 parameter VPN_SIZE = 27;
 parameter PPN_SIZE = 44;
@@ -258,3 +260,5 @@ typedef struct packed {
 } csr_ptw_comm_t;
 
 endpackage
+
+`IGNORE_WARNINGS_END

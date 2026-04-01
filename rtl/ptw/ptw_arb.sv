@@ -18,6 +18,8 @@
  * under the License.
  */
 
+`IGNORE_WARNINGS_BEGIN
+
 module ptw_arb 
 import mmu_pkg::*;
 #(
@@ -134,3 +136,5 @@ always_comb begin
 end
 
 endmodule
+
+`IGNORE_WARNINGS_END

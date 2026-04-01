@@ -18,6 +18,8 @@
  * under the License.
  */
 
+`IGNORE_WARNINGS_BEGIN
+
 module tlb_wrapper 
 import mmu_pkg::*;
 #(
@@ -174,3 +176,5 @@ assign ptw_req_o_store = tlb_ptw_comm.req.store;
 assign ptw_req_o_fetch = tlb_ptw_comm.req.fetch;
 
 endmodule
+
+`IGNORE_WARNINGS_END
