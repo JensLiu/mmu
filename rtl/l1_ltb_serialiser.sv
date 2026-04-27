@@ -16,71 +16,84 @@ module l1_ltb_serialiser
 );
 
     localparam int unsigned TLB_PORT_IDX_W = (NUM_TLB_PORTS > 1) ? $clog2(NUM_TLB_PORTS) : 1;
-    logic                      tlb_sel_valid;
-    logic [TLB_PORT_IDX_W-1:0] tlb_sel_idx;
-    logic tlb_inflight_valid_d, tlb_inflight_valid_q;
-    logic [TLB_PORT_IDX_W-1:0] tlb_inflight_idx_d, tlb_inflight_idx_q;
 
-    // TLB-PTW request arbitration (iterate high-to-low so index 0 wins)
-    always_comb begin : arb_tlb_ptw
-        tlb_ptw_comm_o = '0;
-        tlb_sel_valid  = 1'b0;
-        tlb_sel_idx    = '0;
-        // Last sel_valid assignment wins
-        for (integer i = NUM_TLB_PORTS - 1; i >= 0; --i) begin
-            if (tlb_ptw_comms_i[i].req.valid) begin
-                tlb_sel_valid  = 1'b1;
-                tlb_sel_idx    = TLB_PORT_IDX_W'(i);
-                tlb_ptw_comm_o = tlb_ptw_comms_i[i];
-            end
-        end
+    // -------------------------------------------------------------------------
+    // Arbiter
+    // -------------------------------------------------------------------------
+
+    logic [ NUM_TLB_PORTS-1:0] grant_reqs;
+    logic [TLB_PORT_IDX_W-1:0] grant_idx;
+    logic                      grant_valid;
+
+    for (genvar i = 0; i < NUM_TLB_PORTS; ++i) begin : g_req_valid
+        assign grant_reqs[i] = tlb_ptw_comms_i[i].req.valid;
     end
 
-    // Track which tlb port has the in-flight PTW transaction.
-    always_comb begin : tlb_inflight_next
-        tlb_inflight_valid_d = tlb_inflight_valid_q;
-        tlb_inflight_idx_d   = tlb_inflight_idx_q;
+    // -------------------------------------------------------------------------
+    // FSM: one PTW request in-flight at a time
+    // -------------------------------------------------------------------------
 
-        // PTW accepts a new tlb request only when it is ready.
-        if (ptw_tlb_comm_i.ptw_ready && tlb_sel_valid) begin
-            tlb_inflight_valid_d = 1'b1;
-            tlb_inflight_idx_d   = tlb_sel_idx;
-        end
+    typedef enum logic {
+        S_IDLE,
+        S_WAIT_FOR_RSP
+    } state_t;
+    state_t                      state;
+    logic   [TLB_PORT_IDX_W-1:0] inflight_idx;
 
-        // Clear in-flight owner once PTW returns a response.
-        if (ptw_tlb_comm_i.resp.valid) begin
-            tlb_inflight_valid_d = 1'b0;
-        end
-    end
+    VX_generic_arbiter #(
+        .NUM_REQS(NUM_TLB_PORTS),
+        .TYPE    ("P"),
+        .STICKY  (1)
+    ) tlb_req_arbiter (
+        .clk        (clk_i),
+        .reset      (~rstn_i),
+        .requests   (grant_reqs),
+        .grant_index(grant_idx),
+        `UNUSED_PIN(grant_onehot),
+        .grant_valid(grant_valid),
+        .grant_ready(state == S_IDLE)  // consume a grant only when idle
+    );
 
-    always_ff @(posedge clk_i or negedge rstn_i) begin : tlb_inflight_ff
+    always_ff @(posedge clk_i or negedge rstn_i) begin
         if (!rstn_i) begin
-            tlb_inflight_valid_q <= 1'b0;
-            tlb_inflight_idx_q   <= '0;
-        end else begin
-            tlb_inflight_valid_q <= tlb_inflight_valid_d;
-            tlb_inflight_idx_q   <= tlb_inflight_idx_d;
-        end
+            state        <= S_IDLE;
+            inflight_idx <= '0;
+        end else
+            unique case (state)
+                S_IDLE:
+                if (grant_valid) begin
+                    state        <= S_WAIT_FOR_RSP;
+                    inflight_idx <= grant_idx;  // freeze winner
+                end
+                S_WAIT_FOR_RSP: if (ptw_tlb_comm_i.resp.valid) state <= S_IDLE;
+                default:        state <= S_IDLE;
+            endcase
     end
 
-    // Route PTW status to all TLBs, but gate ready/response to the selected owner.
-    for (genvar i = 0; i < NUM_TLB_PORTS; ++i) begin : g_tlb_ptw_rsp
-        always_comb begin
-            ptw_tlb_comms_o[i]                = '0;
-            ptw_tlb_comms_o[i].ptw_status     = ptw_tlb_comm_i.ptw_status;
-            ptw_tlb_comms_o[i].invalidate_tlb = ptw_tlb_comm_i.invalidate_tlb;
+    // -------------------------------------------------------------------------
+    // Datapath mux
+    // -------------------------------------------------------------------------
 
-            if (!tlb_inflight_valid_q) begin
-                ptw_tlb_comms_o[i].ptw_ready = ptw_tlb_comm_i.ptw_ready && tlb_sel_valid && (tlb_sel_idx == TLB_PORT_IDX_W'(i));
-            end else begin
-                ptw_tlb_comms_o[i].ptw_ready = 1'b0;
-            end
+    // Use frozen inflight_idx once in-flight so the mux is immune to
+    // the arbiter re-selecting as the granted port drops its request.
+    logic [TLB_PORT_IDX_W-1:0] active_idx;
+    assign active_idx = (state == S_WAIT_FOR_RSP) ? inflight_idx : grant_idx;
 
-            ptw_tlb_comms_o[i].resp.valid = ptw_tlb_comm_i.resp.valid && tlb_inflight_valid_q && (tlb_inflight_idx_q == TLB_PORT_IDX_W'(i));
-            ptw_tlb_comms_o[i].resp.error = ptw_tlb_comm_i.resp.error;
-            ptw_tlb_comms_o[i].resp.level = ptw_tlb_comm_i.resp.level;
-            ptw_tlb_comms_o[i].resp.pte = ptw_tlb_comm_i.resp.pte;
-        end
+    // Route ptw_tlb_comm_i back in BOTH states:
+    //   S_IDLE:         port = grant_idx, so the TLB sees ptw_ready=1 on the
+    //                   same cycle the PTW arb (IDLE) asserts it — otherwise
+    //                   the TLB misses the one-cycle ptw_ready pulse entirely.
+    //   S_WAIT_FOR_RSP: port = inflight_idx (frozen), to deliver resp.valid/ppn.
+    //                   grant_valid may drop to 0 here after the TLB deasserts
+    //                   req.valid, so we don't gate on it in this state.
+    logic route_active;
+    assign route_active = (state == S_WAIT_FOR_RSP) || grant_valid;
+
+    always_comb begin
+        tlb_ptw_comm_o = grant_valid ? tlb_ptw_comms_i[active_idx] : '0;
+        for (int i = 0; i < NUM_TLB_PORTS; ++i)
+            ptw_tlb_comms_o[i] = (route_active && active_idx == TLB_PORT_IDX_W'(i))
+                                  ? ptw_tlb_comm_i : '0;
     end
 
 endmodule
