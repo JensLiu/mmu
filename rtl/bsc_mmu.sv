@@ -25,20 +25,18 @@ module bsc_mmu
 #(
     parameter int unsigned XLEN               = 32,
     parameter int unsigned NUM_CORES          = 1,
-    parameter int unsigned NUM_DTLBS_PER_CORE = 1,
-    parameter int unsigned NUM_DTLB_PORTS     = NUM_CORES * NUM_DTLBS_PER_CORE,
-    parameter int unsigned NUM_ITLB_PORTS     = NUM_CORES
+    parameter int unsigned NUM_DTLBS_PER_CORE = 1
 ) (
     input logic clk_i,
     input logic rstn_i,
 
     // iTLB interface
-    input  cache_tlb_comm_t icache_itlb_comm_i[NUM_ITLB_PORTS],
-    output tlb_cache_comm_t itlb_icache_comm_o[NUM_ITLB_PORTS],
+    input  core_tlb_comm_t core_itlb_comm_i[NUM_CORES],
+    output tlb_core_comm_t itlb_core_comm_o[NUM_CORES],
 
     // dTLB interface
-    input  cache_tlb_comm_t core_dtlb_comm_i[NUM_DTLB_PORTS],
-    output tlb_cache_comm_t dtlb_core_comm_o[NUM_DTLB_PORTS],
+    input  core_tlb_comm_t core_dtlb_comm_i[NUM_CORES * NUM_DTLBS_PER_CORE],
+    output tlb_core_comm_t dtlb_core_comm_o[NUM_CORES * NUM_DTLBS_PER_CORE],
 
     // CSR interface
     input csr_ptw_comm_t csr_ptw_comm_i,
@@ -48,70 +46,59 @@ module bsc_mmu
     input  dmem_ptw_comm_t dmem_ptw_comm_i
 );
 
-    // Page Table Walker - iTLB/dTLB Connections
-    // - Per-TLB ports connect to the serializers.
-    // - The PTW itself exposes a single iTLB and a single dTLB port.
-    tlb_ptw_comm_t itlb_ptw_comm, dtlb_ptw_comm;
-    ptw_tlb_comm_t ptw_itlb_comm, ptw_dtlb_comm;
+    tlb_ptw_comm_t i_l1_l2_comm_per_core[NUM_CORES];
+    ptw_tlb_comm_t i_l2_l1_comm_per_core[NUM_CORES];
+    tlb_ptw_comm_t d_l1_l2_comm_per_core[NUM_CORES];
+    ptw_tlb_comm_t d_l2_l1_comm_per_core[NUM_CORES];
 
-    tlb_ptw_comm_t itlb_ptw_comm_per_port[NUM_ITLB_PORTS];
-    ptw_tlb_comm_t ptw_itlb_comm_per_port[NUM_ITLB_PORTS];
-
-    tlb_ptw_comm_t dtlb_ptw_comm_per_port[NUM_DTLB_PORTS];
-    ptw_tlb_comm_t ptw_dtlb_comm_per_port[NUM_DTLB_PORTS];
-
-    // L1 iTLBs
-    for (genvar i = 0; i < NUM_ITLB_PORTS; ++i) begin : g_itlb
-        tlb l1_itlb_inst (
+    // L1 TLBs
+    for (genvar i = 0; i < NUM_CORES; ++i) begin : g_itlb
+        l1_tlb #(
+            .NUM_TLB_PORTS(1)
+        ) l1_itlb_inst (
             .clk_i           (clk_i),
             .rstn_i          (rstn_i),
-            .cache_tlb_comm_i(icache_itlb_comm_i[i]),
-            .tlb_cache_comm_o(itlb_icache_comm_o[i]),
-            .ptw_tlb_comm_i  (ptw_itlb_comm_per_port[i]),
-            .tlb_ptw_comm_o  (itlb_ptw_comm_per_port[i]),
-            .pmu_tlb_access_o(itlb_access_o),
-            .pmu_tlb_miss_o  (itlb_miss_o)
+            .core_tlb_comms_i(core_itlb_comm_i[i]),
+            .tlb_core_comms_o(itlb_core_comm_o[i]),
+            .l2_l1_comm_i    (i_l2_l1_comm_per_core[i]),
+            .l1_l2_comm_o    (i_l1_l2_comm_per_core[i])
+        );
+
+        l1_tlb #(
+            .NUM_TLB_PORTS(NUM_DTLBS_PER_CORE)
+        ) l1_dtlb_inst (
+            .clk_i           (clk_i),
+            .rstn_i          (rstn_i),
+            .core_tlb_comms_i(core_dtlb_comm_i[i*NUM_DTLBS_PER_CORE+:NUM_DTLBS_PER_CORE]),
+            .tlb_core_comms_o(dtlb_core_comm_o[i*NUM_DTLBS_PER_CORE+:NUM_DTLBS_PER_CORE]),
+            .l2_l1_comm_i    (d_l2_l1_comm_per_core[i]),
+            .l1_l2_comm_o    (d_l1_l2_comm_per_core[i])
         );
     end
 
-    // L1 dTLBs
-    tlb_cache_comm_t dtlb_core_comm_per_port[NUM_DTLB_PORTS];
-    logic            dtlb_access_o_per_port [NUM_DTLB_PORTS];
-    logic            dtlb_miss_o_per_port   [NUM_DTLB_PORTS];
-    for (genvar i = 0; i < NUM_DTLB_PORTS; ++i) begin : g_dtlb
-        tlb l1_dtlb_inst (
-            .clk_i           (clk_i),
-            .rstn_i          (rstn_i),
-            .cache_tlb_comm_i(core_dtlb_comm_i[i]),
-            .tlb_cache_comm_o(dtlb_core_comm_o[i]),
-            .ptw_tlb_comm_i  (ptw_dtlb_comm_per_port[i]),
-            .tlb_ptw_comm_o  (dtlb_ptw_comm_per_port[i]),
-            .pmu_tlb_access_o(dtlb_access_o_per_port[i]),
-            .pmu_tlb_miss_o  (dtlb_miss_o_per_port[i])
-        );
-    end
-
-    // TODO: proof of concept, use a serialiser first
-    l1_ltb_serialiser #(
-        .NUM_TLB_PORTS(NUM_DTLB_PORTS)  // We only serialize dTLB requests since iTLBs are usually smaller and can be afforded their own PTW port
-    ) dtlb_serialiser (
+    // TODO: Temporary solution
+    l1_l2_comm_t i_l1_l2_comm, d_l1_l2_comm;
+    l2_l1_comm_t i_l2_l1_comm, d_l2_l1_comm;
+    l1_tlb_serialiser #(
+        .num_tlb_ports(num_cores)  // one port per l1 tlb
+    ) itlb_ptw_serialiser (
         .clk_i          (clk_i),
         .rstn_i         (rstn_i),
-        .tlb_ptw_comms_i(dtlb_ptw_comm_per_port),
-        .ptw_tlb_comms_o(ptw_dtlb_comm_per_port),
-        .tlb_ptw_comm_o (dtlb_ptw_comm),
-        .ptw_tlb_comm_i (ptw_dtlb_comm)
+        .tlb_ptw_comms_i(i_l1_l2_comm_per_core),
+        .ptw_tlb_comms_o(i_l2_l1_comm_per_core),
+        .tlb_ptw_comm_o (i_l1_l2_comm_o),
+        .ptw_tlb_comm_i (i_l2_l1_comm_i)
     );
 
-    l1_ltb_serialiser #(
-        .NUM_TLB_PORTS(NUM_ITLB_PORTS)
-    ) itlb_serialiser (
+    l1_tlb_serialiser #(
+        .num_tlb_ports(num_cores)  // one port per l1 tlb
+    ) dtlb_ptw_serialiser (
         .clk_i          (clk_i),
         .rstn_i         (rstn_i),
-        .tlb_ptw_comms_i(itlb_ptw_comm_per_port),  // wrap in array for uniformity
-        .ptw_tlb_comms_o(ptw_itlb_comm_per_port),  // wrap in array for uniformity
-        .tlb_ptw_comm_o (itlb_ptw_comm),
-        .ptw_tlb_comm_i (ptw_itlb_comm)
+        .tlb_ptw_comms_i(d_l1_l2_comm_per_core),
+        .ptw_tlb_comms_o(d_l2_l1_comm_per_core),
+        .tlb_ptw_comm_o (d_l1_l2_comm_o),
+        .ptw_tlb_comm_i (d_l2_l1_comm_i)
     );
 
     ptw #(
@@ -121,12 +108,12 @@ module bsc_mmu
         .rstn_i(rstn_i),
 
         // iTLB request-response
-        .itlb_ptw_comm_i(itlb_ptw_comm),
-        .ptw_itlb_comm_o(ptw_itlb_comm),
+        .itlb_ptw_comm_i(i_l2_l1_comm_i),
+        .ptw_itlb_comm_o(i_l1_l2_comm_o),
 
         // dTLB request-response
-        .dtlb_ptw_comm_i(dtlb_ptw_comm),
-        .ptw_dtlb_comm_o(ptw_dtlb_comm),
+        .dtlb_ptw_comm_i(d_l2_l1_comm_i),
+        .ptw_dtlb_comm_o(d_l1_l2_comm_o),
 
         // dmem request-response
         .dmem_ptw_comm_i(dmem_ptw_comm_i),
