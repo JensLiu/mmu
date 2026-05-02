@@ -70,9 +70,9 @@ module tlb_storage
         //   SV39 (LEVELS=3, PAGE_LVL_BITS=9): l=0→vpn[26:18], l=1→vpn[26:9], l=2→vpn[26:0]
         //   SV32 (LEVELS=2, PAGE_LVL_BITS=10): l=0→vpn[19:10], l=1→vpn[19:0]
 
-        assign cache_vpn_per_port[port] = tlb_storage_read_comms_i[port].req.vpn;
+        assign cache_vpn_per_port[port] = tlb_storage_read_comms_i[port].read_req.vpn;
         logic [ASID_SIZE-1:0] cache_asid;
-        assign cache_asid = tlb_storage_read_comms_i[port].req.asid;
+        assign cache_asid = tlb_storage_read_comms_i[port].read_req.asid;
 
         for (genvar lvl = 0; lvl < LEVELS; lvl++) begin : g_cam_hits
             // Number of VPN bits to compare for a leaf at PTW level lvl.
@@ -92,12 +92,12 @@ module tlb_storage
             assign hit_per_lvl_per_port[port][lvl] = |hits_per_lvl[lvl];
         end
 
-        // OR all per-level hits; at most one entry in hits_cam will be '1'
+        // OR all per-level hits (each entry is tagged with exactly one level).
         always_comb begin
             hits_cam = '0;
-            for (int l = 0; l < LEVELS; l++) hits_cam[lvl] |= hits_per_lvl[lvl];
+            for (int l = 0; l < LEVELS; l++) hits_cam |= hits_per_lvl[l];
         end
-        assign hit_cam = |hits_cam;
+        assign hit_cam_per_port[port] = |hits_cam;
 
         // encodes the hit index
         logic found;
@@ -121,11 +121,13 @@ module tlb_storage
     assign tlb_has_invalid_entry_o      = invalid_entry_found;
     assign some_tlb_invalid_entry_idx_o = invalid_entry_idx;
     always_comb begin
+        invalid_entry_found = 1'b0;
+        invalid_entry_idx   = '0;
         for (int i = 0; i < TLB_ENTRIES; i++) begin
-            // NOTE: difference between nempty and valid
-            if (!tlb_entries[i].nempty) begin
+            // NOTE: difference between nempty and valid — pick first invalid slot.
+            if (!invalid_entry_found && !tlb_entries[i].nempty) begin
                 invalid_entry_idx   = trunc_tlb_idx_size($unsigned(i));
-                invalid_entry_found = 1;
+                invalid_entry_found = 1'b1;
             end
         end
     end
@@ -140,14 +142,14 @@ module tlb_storage
     logic       [TLB_IDX_SIZE-1:0] write_idx;
     tlb_entry_t                    write_entry;
 
-    assign clear_tlb   = tlb_storage_write_comm_i.req.clear_tlb;
-    assign write_tlb   = tlb_storage_write_comm_i.req.write_tlb;
-    assign write_idx   = tlb_storage_write_comm_i.req.write_idx;
-    assign write_entry = tlb_storage_write_comm_i.req.write_entry;
+    assign clear_tlb   = tlb_storage_write_comm_i.clear_req.clear_tlb;
+    assign write_tlb   = tlb_storage_write_comm_i.update_req.write_tlb;
+    assign write_idx   = tlb_storage_write_comm_i.update_req.write_idx;
+    assign write_entry = tlb_storage_write_comm_i.update_req.write_entry;
 
     for (genvar i = 0; i < TLB_ENTRIES; ++i) begin : g_clear_mask
         // flush also invalid entries
-        assign clear_mask[i] = !tlb_entries[i].valid || tlb_storage_write_comm_i.req.clear_mask[i];
+        assign clear_mask[i] = !tlb_entries[i].valid || tlb_storage_write_comm_i.clear_req.clear_mask[i];
     end
 
     always_ff @(posedge clk_i, negedge rstn_i) begin
@@ -169,12 +171,15 @@ module tlb_storage
     // Read Response Logic
     always_comb begin
         for (integer port = 0; port < NUM_READ_PORTS; ++port) begin
-            storage_tlb_read_comms_o[port].resp.is_hit = hit_cam_per_port[port];
-            storage_tlb_read_comms_o[port].resp.hit_idx = hit_idx_per_port[port];
-            storage_tlb_read_comms_o[port].resp.hit_level = hit_per_lvl_per_port[port][0] ? 0 :
-                                                              (hit_per_lvl_per_port[port][1] ? 1 :
-                                                              (hit_per_lvl_per_port[port][2] ? 2 : '0));
-            storage_tlb_read_comms_o[port].resp.entry = tlb_entries[hit_idx_per_port[port]];
+            logic [LEVEL_BITS-1:0] hit_lvl_sel;
+            hit_lvl_sel = '0;
+            for (int hl = LEVELS - 1; hl >= 0; hl--) begin
+                if (hit_per_lvl_per_port[port][hl]) hit_lvl_sel = LEVEL_BITS'(hl);
+            end
+            storage_tlb_read_comms_o[port].read_resp.is_hit = hit_cam_per_port[port];
+            storage_tlb_read_comms_o[port].read_resp.hit_idx = hit_idx_per_port[port];
+            storage_tlb_read_comms_o[port].read_resp.hit_level = hit_lvl_sel;
+            storage_tlb_read_comms_o[port].read_resp.hit_entry = tlb_entries[hit_idx_per_port[port]];
         end
     end
 
