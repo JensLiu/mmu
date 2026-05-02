@@ -152,7 +152,7 @@ module tlb_storage
         assign clear_mask[i] = !tlb_entries[i].valid || tlb_storage_write_comm_i.clear_req.clear_mask[i];
     end
 
-    always_ff @(posedge clk_i, negedge rstn_i) begin
+    always_ff @(posedge clk_i) begin
         if (~rstn_i) begin
             for (int i = 0; i < TLB_ENTRIES; ++i) begin
                 tlb_entries[i] <= '0;

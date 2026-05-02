@@ -3,5 +3,8 @@
 ./rtl/common/pseudoLRU.sv
 ./rtl/ptw/ptw_arb.sv
 ./rtl/ptw/ptw.sv
+./rtl/tlb/tlb_miss_serialiser.sv
+./rtl/tlb/l1_tlb.sv
 ./rtl/tlb/tlb.sv
+./rtl/l1_tlb_serialiser.sv
 ./rtl/bsc_mmu.sv

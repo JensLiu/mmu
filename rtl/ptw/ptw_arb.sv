@@ -48,7 +48,7 @@ module ptw_arb
     } arbptw_state;
 
     arbptw_state current_state, next_state;
-    always_ff @(posedge clk_i, negedge rstn_i) begin
+    always_ff @(posedge clk_i) begin
         if (!rstn_i) begin
             current_state      <= IDLE;
             is_req_waiting_q   <= 1'b0;

@@ -3,18 +3,20 @@ module tlb_miss_serialiser
 #(
     parameter int unsigned NUM_PORTS = 1
 ) (
-    input  logic                         clk_i,
-    input  logic                         rstn_i,
-    input  logic [        NUM_PORTS-1:0] tlb_misses_i,
-    input  logic                         grant_next_i,
-    output logic                         active_o,
-    output logic [$clog2(NUM_PORTS)-1:0] active_idx_o
+    input  logic                                               clk_i,
+    input  logic                                               rstn_i,
+    input  logic [                              NUM_PORTS-1:0] tlb_misses_i,
+    input  logic                                               grant_next_i,
+    output logic                                               active_o,
+    output logic [(NUM_PORTS > 1 ? $clog2(NUM_PORTS) : 1)-1:0] active_idx_o
 );
 
-    logic                         grant_valid;
-    logic                         grant_ready;
-    logic [$clog2(NUM_PORTS)-1:0] grant_idx;
-    logic [$clog2(NUM_PORTS)-1:0] inflight_idx;
+    localparam int unsigned PORT_IDX_W = (NUM_PORTS > 1) ? $clog2(NUM_PORTS) : 1;
+
+    logic                  grant_valid;
+    logic                  grant_ready;
+    logic [PORT_IDX_W-1:0] grant_idx;
+    logic [PORT_IDX_W-1:0] inflight_idx;
 
     assign grant_ready  = state == S_IDLE;  // consume a grant only when idle
     assign active_o     = (state == S_WAIT) || grant_valid;
@@ -41,6 +43,7 @@ module tlb_miss_serialiser
     tlb_miss_state_t state;
     always_ff @(posedge clk_i) begin : g_tlb_miss_fsm
         if (!rstn_i) begin
+            state        <= S_IDLE;
             inflight_idx <= '0;
         end else begin
             case (state)

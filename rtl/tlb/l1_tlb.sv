@@ -220,7 +220,7 @@ module l1_tlb
 
     // L1-L2 TLB request temporary storage
     tlb_req_tmp_storage_t tlb_req_tmp;
-    always_ff @(posedge clk_i, negedge rstn_i) begin
+    always_ff @(posedge clk_i) begin
         if (!rstn_i) begin
             tlb_req_tmp <= '0;
         end else if (store_tlb_req) begin

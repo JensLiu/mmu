@@ -14,6 +14,9 @@ module pte_perm_check
     output logic         exec_ok_o
 );
 
+    `UNUSED_VAR (ptw_status_i)
+    `UNUSED_VAR (tlb_entry_i)
+
     // Store to an entry that is NOT dirty (Need to update the PT)
     always_comb begin
         if (is_store_i) begin

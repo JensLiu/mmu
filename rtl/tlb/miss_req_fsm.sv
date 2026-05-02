@@ -27,9 +27,6 @@ module miss_req_fsm
     } ptw_state_t;
 
     ptw_state_t current_state, next_state;
-    logic pmu_tlb_access, pmu_tlb_miss;
-    tlb_req_tmp_storage_t tlb_req_tmp;
-
     logic store_tlb_req, send_tlb_req, write_tlb, clean_tlb;
     assign store_tlb_req_o = store_tlb_req;
     assign send_tlb_req_o  = send_tlb_req;
@@ -38,21 +35,17 @@ module miss_req_fsm
     assign clear_tlb_o     = clean_tlb;
 
     always_comb begin
-        store_tlb_req  = 1'b0;
-        send_tlb_req   = 1'b0;
-        write_tlb      = 1'b0;
-        clean_tlb      = 1'b0;
-        pmu_tlb_access = 1'b0;
-        pmu_tlb_miss   = 1'b0;
-        next_state     = current_state;  // By default, we remain in the same state
+        store_tlb_req = 1'b0;
+        send_tlb_req  = 1'b0;
+        write_tlb     = 1'b0;
+        clean_tlb     = 1'b0;
+        next_state    = current_state;  // By default, we remain in the same state
         case (current_state)
             PS_IDLE: begin
                 if (req_valid_i) begin  // if we have a valid request always try to clean the tlb
-                    clean_tlb      = 1'b1;  // flush invalid pages, and not dirty page case
-                    pmu_tlb_access = 1'b1;  // tlb access event for PMU
+                    clean_tlb = 1'b1;  // flush invalid pages, and not dirty page case
                     if (tlb_miss_i) begin
                         store_tlb_req = 1'b1;  // store req to send it in the next state
-                        pmu_tlb_miss  = 1'b1;  // tlb miss event for PMU
                         next_state    = PS_SEND_REQUEST;
                     end
                 end
@@ -89,7 +82,7 @@ module miss_req_fsm
         endcase
     end
 
-    always_ff @(posedge clk_i, negedge rstn_i) begin
+    always_ff @(posedge clk_i) begin
         if (!rstn_i) begin
             current_state <= PS_IDLE;
         end else begin

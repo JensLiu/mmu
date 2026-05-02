@@ -175,7 +175,7 @@ module ptw
     assign ptw_ready = (current_state == S_READY);
 
     // Catch Request from TLB(Arb) & PTE response from dmem
-    always_ff @(posedge clk_i, negedge rstn_i) begin
+    always_ff @(posedge clk_i) begin
         if (!rstn_i) begin
             r_req <= '0;
             r_pte <= '0;
@@ -215,7 +215,7 @@ module ptw
         .replacement_idx_o(plru_eviction_idx)
     );
 
-    always_ff @(posedge clk_i, negedge rstn_i) begin
+    always_ff @(posedge clk_i) begin
         if (!rstn_i) begin
             for (int i = 0; i < PTW_CACHE_SIZE; i++) begin
                 ptecache_entry[i] <= '0;
@@ -385,8 +385,8 @@ module ptw
     assign ptw_tlb_comm.ptw_status     = csr_ptw_comm_i.mstatus;
     assign ptw_tlb_comm.invalidate_tlb = csr_ptw_comm_i.flush;
 
-    // Page-Table Walker FSM 
-    always_ff @(posedge clk_i, negedge rstn_i) begin
+    // Page-Table Walker FSM
+    always_ff @(posedge clk_i) begin
         if (!rstn_i) begin
             current_state <= S_READY;
             count_q       <= '0;
