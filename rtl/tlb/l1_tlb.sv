@@ -60,21 +60,23 @@ module l1_tlb
     // -------------------------------------------------------------------------
     // Parallel CAM hit logic
     // -------------------------------------------------------------------------
-    logic                          hit_cam_per_port      [NUM_TLB_PORTS];
-    tlb_entry_t                    tlb_hit_entry_per_port[NUM_TLB_PORTS];
-    logic       [  LEVEL_BITS-1:0] hit_level_per_port    [NUM_TLB_PORTS];
-    logic       [TLB_IDX_SIZE-1:0] hit_idx_per_port      [NUM_TLB_PORTS];
-    logic [NUM_TLB_PORTS-1:0]      tlb_miss_per_port;
+    logic                           hit_cam_per_port  [NUM_TLB_PORTS];
+    tlb_entry_t                     hit_entry_per_port[NUM_TLB_PORTS];
+    logic       [   LEVEL_BITS-1:0] hit_level_per_port[NUM_TLB_PORTS];
+    logic       [ TLB_IDX_SIZE-1:0] hit_idx_per_port  [NUM_TLB_PORTS];
+    logic       [NUM_TLB_PORTS-1:0] tlb_miss_per_port;
+    logic       [     VPN_SIZE-1:0] vpn_per_port      [NUM_TLB_PORTS];
     for (genvar i = 0; i < NUM_TLB_PORTS; ++i) begin : g_cam_logic
         logic vm_enable;
         assign vm_enable = core_tlb_comms_i[i].vm_enable;
         assign tlb_storage_read_comms[i].read_req.vpn = core_tlb_comms_i[i].req.vpn;
         assign tlb_storage_read_comms[i].read_req.asid = core_tlb_comms_i[i].req.asid;
         assign hit_cam_per_port[i] = storage_tlb_read_comms[i].read_resp.is_hit;
-        assign tlb_hit_entry_per_port[i] = storage_tlb_read_comms[i].read_resp.hit_entry;
+        assign hit_entry_per_port[i] = storage_tlb_read_comms[i].read_resp.hit_entry;
         assign hit_level_per_port[i] = storage_tlb_read_comms[i].read_resp.hit_level;
         assign hit_idx_per_port[i] = storage_tlb_read_comms[i].read_resp.hit_idx;
         assign tlb_miss_per_port[i] = vm_enable && !(hit_cam_per_port[i]);
+        assign vpn_per_port[i] = core_tlb_comms_i[i].req.vpn;
     end
 
     // -------------------------------------------------------------------------
@@ -89,7 +91,7 @@ module l1_tlb
         logic store_hit, read_ok, write_ok, exec_ok;
         pte_perm_check pte_perm_check_it (
             .ptw_status_i (l2_l1_comm_i.ptw_status),
-            .tlb_entry_i  (tlb_hit_entry_per_port[port]),
+            .tlb_entry_i  (hit_entry_per_port[port]),
             .sv_priv_lvl_i(core_tlb_comms_i[port].priv_lvl != '0),
             .is_store_i   (core_tlb_comms_i[port].req.store),
             .store_hit_o  (store_hit),
@@ -106,8 +108,8 @@ module l1_tlb
         // These information are needed to update the Access and Dirty flags in the TLB entry
         // This should be combinational, since multiple ports may hit the same entry
         logic entry_no_access_bit, entry_no_dirty_bit;
-        assign entry_no_access_bit = !tlb_hit_entry_per_port[port].access && tlb_hit_entry_per_port[port].valid;
-        assign entry_no_dirty_bit = !store_hit_per_port[port] && tlb_hit_entry_per_port[port].valid;
+        assign entry_no_access_bit = !hit_entry_per_port[port].access && hit_entry_per_port[port].valid;
+        assign entry_no_dirty_bit = !store_hit_per_port[port] && hit_entry_per_port[port].valid;
         assign tlb_hit_per_port[port] = vm_enable && hit_cam_per_port[port] && store_hit_per_port[port];
 
         // Exception Responses
@@ -153,8 +155,7 @@ module l1_tlb
     logic tlb_hit, tlb_miss, store_hit, vm_enable, passthrough, hit_cam;
     tlb_entry_t                    hit_entry;
     logic       [TLB_IDX_SIZE-1:0] hit_idx;
-    logic       [    VPN_SIZE-1:0] miss_vpn;
-    assign hit_entry   = tlb_hit_per_port[miss_port] ? tlb_hit_entry_per_port[miss_port] : '0;
+    assign hit_entry   = tlb_hit_per_port[miss_port] ? hit_entry_per_port[miss_port] : '0;
     assign tlb_hit     = tlb_hit_per_port[miss_port];
     assign tlb_miss    = tlb_miss_per_port[miss_port];
     assign hit_idx     = hit_idx_per_port[miss_port];
@@ -162,7 +163,6 @@ module l1_tlb
     assign vm_enable   = core_tlb_comms_i[miss_port].vm_enable;
     assign passthrough = core_tlb_comms_i[miss_port].req.passthrough;
     assign hit_cam     = hit_cam_per_port[miss_port];
-    assign miss_vpn    = core_tlb_comms_i[miss_port].req.vpn;
 
     // Flush
     logic [TLB_ENTRIES-1:0] clear_mask;
@@ -181,7 +181,7 @@ module l1_tlb
     end
 
     // L1 Miss Request FSM
-    logic store_tlb_req, send_tlb_req, write_tlb, clear_tlb, tlb_ready;
+    logic store_tlb_req, send_tlb_req, write_tlb, clear_tlb, fsm_ready;
     miss_req_fsm miss_req_fsm (
         .clk_i           (clk_i),
         .rstn_i          (rstn_i),
@@ -192,7 +192,7 @@ module l1_tlb
         .invalidate_tlb_i(l2_l1_comm_i.invalidate_tlb),
         .rsp_valid_i     (l2_l1_comm_i.resp.valid),
         // Output Flags
-        .tlb_ready_o     (tlb_ready),
+        .fsm_idle_o      (fsm_ready),
         .store_tlb_req_o (store_tlb_req),
         .send_tlb_req_o  (send_tlb_req),
         .write_tlb_o     (write_tlb),
@@ -200,7 +200,7 @@ module l1_tlb
     );
 
 
-    // Eviction
+    // Eviction / Victim Selection
     logic unsigned [TLB_IDX_SIZE-1:0] eviction_idx;
     eviction_policy eviction_policy (
         .clk_i                  (clk_i),
@@ -212,7 +212,7 @@ module l1_tlb
         .evict_idx_o            (eviction_idx)
     );
 
-    // L1-L2 TLB request storage
+    // L1-L2 TLB request temporary storage
     tlb_req_tmp_storage_t tlb_req_tmp;
     always_ff @(posedge clk_i, negedge rstn_i) begin
         if (!rstn_i) begin
@@ -240,54 +240,88 @@ module l1_tlb
         end
     end
 
+    // TLB Storage communication
+    assign tlb_storage_write_comm.update_req.write_tlb = write_tlb;
+    assign tlb_storage_write_comm.update_req.write_idx = tlb_req_tmp.write_idx;
+    assign tlb_storage_write_comm.update_req.write_entry.vpn = tlb_req_tmp.vpn;
+    assign tlb_storage_write_comm.update_req.write_entry.asid = tlb_req_tmp.asid;
+    assign tlb_storage_write_comm.update_req.write_entry.ppn = l2_l1_comm_i.resp.pte.ppn;
+    assign tlb_storage_write_comm.update_req.write_entry.level = l2_l1_comm_i.resp.level;
+    assign tlb_storage_write_comm.update_req.write_entry.dirty = l2_l1_comm_i.resp.pte.d;
+    assign tlb_storage_write_comm.update_req.write_entry.access = l2_l1_comm_i.resp.pte.a;
+    assign tlb_storage_write_comm.update_req.write_entry.perms.ur = l2_l1_comm_i.resp.pte.r & l2_l1_comm_i.resp.pte.u & l2_l1_comm_i.resp.pte.v;
+    assign tlb_storage_write_comm.update_req.write_entry.perms.uw = l2_l1_comm_i.resp.pte.w & l2_l1_comm_i.resp.pte.u & l2_l1_comm_i.resp.pte.v;
+    assign tlb_storage_write_comm.update_req.write_entry.perms.ux = l2_l1_comm_i.resp.pte.x & l2_l1_comm_i.resp.pte.u & l2_l1_comm_i.resp.pte.v;
+    assign tlb_storage_write_comm.update_req.write_entry.perms.sr = l2_l1_comm_i.resp.pte.r & !l2_l1_comm_i.resp.pte.u & l2_l1_comm_i.resp.pte.v;
+    assign tlb_storage_write_comm.update_req.write_entry.perms.sw = l2_l1_comm_i.resp.pte.w & !l2_l1_comm_i.resp.pte.u & l2_l1_comm_i.resp.pte.v;
+    assign tlb_storage_write_comm.update_req.write_entry.perms.sx = l2_l1_comm_i.resp.pte.x & !l2_l1_comm_i.resp.pte.u & l2_l1_comm_i.resp.pte.v;
+    assign tlb_storage_write_comm.update_req.write_entry.valid = !l2_l1_comm_i.resp.error;
+    assign tlb_storage_write_comm.update_req.write_entry.nempty = 1'b1;
+    assign tlb_storage_write_comm.clear_req.clear_tlb = clear_tlb;
+    assign tlb_storage_write_comm.clear_req.clear_mask = clear_mask;
+
+
+    // ----------------------------------------------------------
     // PPN ASSIGNMENT
+    // ----------------------------------------------------------
     // PTW encodes superpages as if they were 4 KB pages (LowRISC convention).
     // For a leaf found at PTW level l, the lower (LEVELS-1-l)*PAGE_LVL_BITS
     // bits of the stored PPN are meaningless; those bits come from the VPN instead.
     //   l=LEVELS-1 (4 KB page): use stored PPN directly.
     //   l=0        (largest superpage): replace bottom (LEVELS-1)*PAGE_LVL_BITS bits.
 
-    logic [PPN_SIZE-1:0] ppn_per_lvl [LEVELS];
-    logic [  LEVELS-1:0] hit_per_lvl;
-    for (genvar lvl = 0; lvl < LEVELS; ++lvl) begin : g_hit_per_lvl
-        assign hit_per_lvl[lvl] = hit_cam && (hit_level_per_port[miss_port] == LEVEL_BITS'(lvl));
-    end
+    // Each level's PPN assignment
+    logic [PPN_SIZE-1:0] ppn_per_port_per_lvl   [NUM_TLB_PORTS] [LEVELS];
+    logic [  LEVELS-1:0] hit_per_port_per_lvl   [NUM_TLB_PORTS];
+    logic [PPN_SIZE-1:0] ppn_translated_per_port[NUM_TLB_PORTS];
+    for (genvar port = 0; port < NUM_TLB_PORTS; ++port) begin : g_ppn_assignment
 
-    for (genvar ppn_l = 0; ppn_l < LEVELS; ppn_l++) begin : g_ppn_lvl
-        localparam int SUPER_PAGE_BITS = (LEVELS - 1 - ppn_l) * PAGE_LVL_BITS;
-        if (SUPER_PAGE_BITS == 0) begin : g_kilo
-            // Deepest level (4 KB): PPN comes directly from the TLB entry.
-            assign ppn_per_lvl[ppn_l] = hit_entry.ppn;
-        end else begin : g_super
-            // Superpage: replace the lower SUPER_PAGE_BITS of PPN with VPN bits.
-            assign ppn_per_lvl[ppn_l] = {
-                hit_entry.ppn[PPN_SIZE-1 : SUPER_PAGE_BITS], miss_vpn[SUPER_PAGE_BITS-1 : 0]
-            };
+        for (genvar lvl = 0; lvl < LEVELS; ++lvl) begin : g_hit_per_lvl
+            assign hit_per_port_per_lvl[port][lvl] =  hit_cam_per_port[port] && (
+                hit_level_per_port[port] == LEVEL_BITS'(lvl));
         end
-    end
 
-    // OR per-level translated PPNs (at most one level hits at a time).
-    logic [PPN_SIZE-1:0] ppn_translated;
-    always_comb begin
-        ppn_translated = '0;
-        for (int l = 0; l < LEVELS; l++) begin
-            ppn_translated |= ppn_per_lvl[l] & {PPN_SIZE{hit_per_lvl[l] & vm_enable & ~passthrough}};
+        for (genvar ppn_l = 0; ppn_l < LEVELS; ppn_l++) begin : g_ppn_per_lvl
+            localparam int SUPER_PAGE_BITS = (LEVELS - 1 - ppn_l) * PAGE_LVL_BITS;
+            if (SUPER_PAGE_BITS == 0) begin : g_kilo
+                // Deepest level (4 KB): PPN comes directly from the TLB entry.
+                assign ppn_per_port_per_lvl[port][ppn_l] = hit_entry_per_port[port].ppn;
+            end else begin : g_super
+                // Superpage: replace the lower SUPER_PAGE_BITS of PPN with VPN bits.
+                assign ppn_per_port_per_lvl[port][ppn_l] = {
+                    hit_entry_per_port[port].ppn[PPN_SIZE-1 : SUPER_PAGE_BITS],
+                    vpn_per_port[port][SUPER_PAGE_BITS-1 : 0]
+                };
+            end
+        end
+
+        // PPN is considered translated if any level hits (at most one level hits at a time)
+        logic [PPN_SIZE-1:0] ppn_translation_mask_per_lvl[LEVELS];
+        for (genvar lvl = 0; lvl < LEVELS; ++lvl) begin : g_ppn_translation_mask
+            assign ppn_translation_mask_per_lvl[lvl] = {PPN_SIZE{hit_per_port_per_lvl[port][lvl] & vm_enable & ~passthrough}};
+        end
+        always_comb begin : g_ppn_selection
+            ppn_translated_per_port[port] = '0;
+            for (int l = 0; l < LEVELS; l++) begin
+                ppn_translated_per_port[port] |=
+                    ppn_per_port_per_lvl[port][l] & ppn_translation_mask_per_lvl[l];
+            end
         end
     end
 
     // ---------------------------------------------------------
     // TLB Response
     // ---------------------------------------------------------
-    assign tlb_core_comms_o[miss_port].tlb_ready = tlb_ready;
-    assign tlb_core_comms_o[miss_port].resp.miss = tlb_miss_per_port[miss_port];
-    // In translation mode: use per-level reconstructed PPN.
-    // In passthrough/bare mode (vm_enable=0 or passthrough=1): PPN = VPN (identity).
-    assign tlb_core_comms_o[miss_port].resp.ppn = ppn_translated |
-    {{(PPN_SIZE-VPN_SIZE-1){1'b0}}, miss_vpn & {(VPN_SIZE+1){~(vm_enable & ~passthrough)}}};
-    assign tlb_core_comms_o[miss_port].resp.xcpt.load = xcpt_lds[miss_port];
-    assign tlb_core_comms_o[miss_port].resp.xcpt.store = xcpt_sts[miss_port];
-    assign tlb_core_comms_o[miss_port].resp.xcpt.fetch = xcpt_ifs[miss_port];
-    assign tlb_core_comms_o[miss_port].resp.hit_idx = 'h0;
+    for (genvar i = 0; i < NUM_TLB_PORTS; ++i) begin : g_tlb_resp
+        // Not bypass implemented to simplify wiring
+        // the PTW/L2 TLB response will update the TLB and we will find hit in the next cycle
+        assign tlb_core_comms_o[i].resp.miss       = tlb_miss_per_port[i];
+        assign tlb_core_comms_o[i].resp.xcpt.load  = xcpt_lds[i];
+        assign tlb_core_comms_o[i].resp.xcpt.store = xcpt_sts[i];
+        assign tlb_core_comms_o[i].resp.xcpt.fetch = xcpt_ifs[i];
+        assign tlb_core_comms_o[i].resp.ppn        = ppn_translated_per_port[i];
+        assign tlb_core_comms_o[i].resp.hit_idx    = 'h0;
+    end
 
 endmodule
 

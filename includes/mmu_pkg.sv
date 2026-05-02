@@ -65,7 +65,9 @@ package mmu_pkg;
 
     localparam LEVEL_BITS = $clog2(LEVELS);  // Bits needed to encode page levels
 
+    // ---------------------------------------------------------
     // PTE structure - format differs between SV32 and SV39
+    // ---------------------------------------------------------
     // SV32: [31:20]=PPN[1], [19:10]=PPN[0], [9:8]=RSW, [7:0]=flags
     // SV39: [53:10]=PPN, [9:8]=RSW, [7:0]=flags
     typedef struct packed {
@@ -108,11 +110,9 @@ package mmu_pkg;
         logic        uie;
     } csr_mstatus_t;
 
-    ////////////////////////////////
-    //
-    //  TLB
-    //
-    ///////////////////////////////
+    // ---------------------------------------------------------
+    //  TLB Entry Structure
+    // ---------------------------------------------------------
 
     typedef struct packed {
         logic ur;  // User read permission.
@@ -127,15 +127,19 @@ package mmu_pkg;
         logic [VPN_SIZE-1:0] vpn;  // Virtual page number.
         logic [ASID_SIZE-1:0] asid;  // Address space identifier.
         logic [PPN_SIZE-1:0] ppn;  // Physical page number.
-        logic [1:0]             level;  // Page entry size: 2'b00 (1 GiB Page), 2'b01 (2 MiB Page), 2'b10 (4 KiB Page).
+        logic [1:0]          level;  // Page entry size: 2'b00 (1 GiB Page), 2'b01 (2 MiB Page), 2'b10 (4 KiB Page).
         logic dirty;  // The page entry is set as dirty.
         logic access;  // The page entry has been accessed.
         tlb_entry_permissions_t perms;  // TLB page entry permissions
-        logic                   valid;  // The tlb entry is valid, set to 1 when the PTW sends a translation response without errors.
-        logic                   nempty; // The tlb entry is not empty, when the PTW sends a translation response that we don't have to ignore, it is set to 1.
+        // The tlb entry is valid, set to 1 when the PTW sends a translation response without errors.
+        logic valid;
+        // The tlb entry is not empty, when the PTW sends a translation response that we don't have to ignore, it is set to 1.
+        logic nempty;
     } tlb_entry_t;  // TLB page entry.
 
+    // ----------------------------------------------------------
     // TLB Storage Interface
+    // ----------------------------------------------------------
     typedef struct packed {
         logic [ASID_SIZE-1:0] asid;
         logic [VPN_SIZE-1:0]  vpn;
@@ -153,34 +157,25 @@ package mmu_pkg;
         logic                    write_tlb;
         logic [TLB_IDX_SIZE-1:0] write_idx;
         tlb_entry_t              write_entry;
-        // Flush operation
-        logic                    clear_tlb;
-        logic [TLB_ENTRIES-1:0]  clear_mask;
-    } storage_write_req_t;
+    } storage_update_req_t;
 
     typedef struct packed {
-        // logic read_valid;
-        storage_read_req_t read_req;
-    } tlb_storage_read_comm_t;
+        logic                   clear_tlb;
+        logic [TLB_ENTRIES-1:0] clear_mask;
+    } storage_clear_req_t;
+
+    typedef struct packed {storage_read_req_t read_req;} tlb_storage_read_comm_t;
 
     typedef struct packed {
-        logic               write_valid;
-        storage_write_req_t write_req;
+        storage_update_req_t update_req;
+        storage_clear_req_t  clear_req;
     } tlb_storage_write_comm_t;
 
-    typedef struct packed {
-        // logic               read_rsp_ready;
-        storage_read_resp_t read_resp;
-    } storage_tlb_read_comm_t;
+    typedef struct packed {storage_read_resp_t read_resp;} storage_tlb_read_comm_t;
 
-    // typedef struct packed {logic write_resp_ready;} storage_tlb_write_comm_t;
-
-    ////////////////////////////////
-    //
-    //  Cache-TLB communication
-    //
-    ///////////////////////////////
-
+    // ---------------------------------------------------------
+    //  Core-TLB communication
+    // ---------------------------------------------------------
     // Core-TLB request
     typedef struct packed {
         logic valid;  // Translation request valid.
@@ -214,7 +209,11 @@ package mmu_pkg;
     } tlb_core_resp_t;  // Translation response.
 
     typedef struct packed {
-        logic            tlb_ready;     // The tlb is ready to accept a translation request. If 0 it shouldn't receive any translation request.
+        // tlb_ready is handled by the internal TLB miss arbitor
+        // The core can send a translation request at any time,
+        // but on TLB miss, the TLB will only make ONE PTW request at a time
+        // During a TLB miss, the core shuold keep the translation request valid until it becomes a hit
+        // logic            tlb_ready;     // The tlb is ready to accept a translation request. If 0 it shouldn't receive any translation request.
         tlb_core_resp_t resp;  // Translation response.
     } tlb_core_comm_t;  // Communication from TLB to translation requester.
 
@@ -324,8 +323,9 @@ package mmu_pkg;
         dmem_ptw_resp_t resp;
     } dmem_ptw_comm_t;
 
+    // ---------------------------------------------------------
     // CSR interface
-
+    // ---------------------------------------------------------
     typedef struct packed {
         logic [63:0]  satp;
         logic         flush;

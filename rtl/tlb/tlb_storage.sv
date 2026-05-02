@@ -140,9 +140,9 @@ module tlb_storage
     logic       [TLB_IDX_SIZE-1:0] write_idx;
     tlb_entry_t                    write_entry;
 
-    assign clear_tlb = tlb_storage_write_comm_i.write_valid && tlb_storage_write_comm_i.req.clear_tlb;
-    assign write_tlb = tlb_storage_write_comm_i.write_valid && !tlb_storage_write_comm_i.req.write_tlb;
-    assign write_idx = tlb_storage_write_comm_i.req.write_idx;
+    assign clear_tlb   = tlb_storage_write_comm_i.req.clear_tlb;
+    assign write_tlb   = tlb_storage_write_comm_i.req.write_tlb;
+    assign write_idx   = tlb_storage_write_comm_i.req.write_idx;
     assign write_entry = tlb_storage_write_comm_i.req.write_entry;
 
     for (genvar i = 0; i < TLB_ENTRIES; ++i) begin : g_clear_mask
@@ -176,8 +176,6 @@ module tlb_storage
                                                               (hit_per_lvl_per_port[port][2] ? 2 : '0));
             storage_tlb_read_comms_o[port].resp.entry = tlb_entries[hit_idx_per_port[port]];
         end
-        // TODO: do we need this?
-        // storage_tlb_write_comm_o.write_rsp_ready = tlb_storage_write_comm_i.write_valid;
     end
 
 endmodule
