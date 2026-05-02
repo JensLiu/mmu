@@ -1,0 +1,3 @@
+[submodule "submodules/mmu_testbench"]
+	path = submodules/mmu_testbench
+	url = git@github.com:YuZhe-CN/mmu_testbench.git
