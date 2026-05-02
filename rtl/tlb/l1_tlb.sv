@@ -57,6 +57,7 @@ module l1_tlb
         .some_tlb_invalid_entry_idx_o(tlb_invalid_entry_idx)
     );
 
+
     // -------------------------------------------------------------------------
     // Parallel CAM hit logic
     // -------------------------------------------------------------------------
@@ -150,7 +151,12 @@ module l1_tlb
         .active_o    (miss_active),
         .active_idx_o(miss_port)
     );
-    assign miss_grant_next = l2_l1_comm_i.resp.valid;
+
+    // TODO: check this logic?
+    assign miss_grant_next = l2_l1_comm_i.ptw_ready;
+    // (
+    //     !l2_l1_comm_i.resp.valid && l2_l1_comm_i.ptw_ready
+    // ) || (l2_l1_comm_i.resp.valid && !l2_l1_comm_i.ptw_ready);
 
     logic tlb_hit, tlb_miss, store_hit, vm_enable, passthrough, hit_cam;
     tlb_entry_t                    hit_entry;
