@@ -13,7 +13,7 @@ module miss_req_fsm
     input logic rsp_valid_i,
 
     // Output Flags
-    output logic fsm_idle_o,
+    output logic fsm_finished_o,
     output logic store_tlb_req_o,
     output logic send_tlb_req_o,
     output logic write_tlb_o,
@@ -30,7 +30,8 @@ module miss_req_fsm
     logic store_tlb_req, send_tlb_req, write_tlb, clean_tlb;
     assign store_tlb_req_o = store_tlb_req;
     assign send_tlb_req_o  = send_tlb_req;
-    assign fsm_idle_o      = (current_state == PS_IDLE);
+    // FSM is finished when we transition back to IDLE from any other state
+    assign fsm_finished_o  = (current_state != PS_IDLE && next_state == PS_IDLE);
     assign write_tlb_o     = write_tlb;
     assign clear_tlb_o     = clean_tlb;
 

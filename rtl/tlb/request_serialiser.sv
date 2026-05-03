@@ -1,4 +1,4 @@
-module tlb_miss_serialiser
+module request_serialiser
     import mmu_pkg::*;
 #(
     parameter int unsigned NUM_PORTS = 1
@@ -11,6 +11,11 @@ module tlb_miss_serialiser
     output logic [(NUM_PORTS > 1 ? $clog2(NUM_PORTS) : 1)-1:0] active_idx_o
 );
 
+    // NOTE: `grant_next_i` is used to release the grant for the current miss
+    //       and allow the next pending miss (if any) to be granted.
+    //       IT ALLOWS THE STATE TO TRANSITION FROM `S_WAIT` TO `S_IDLE`.
+    // NOTE: NO `grant_next_i` is needed to grant the first miss,
+    //       since the state is S_IDLE and `grant_ready` is always high.
     localparam int unsigned PORT_IDX_W = (NUM_PORTS > 1) ? $clog2(NUM_PORTS) : 1;
 
     logic                  grant_valid;

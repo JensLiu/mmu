@@ -36,6 +36,16 @@ module l1_tlb
     input  l2_l1_comm_t l2_l1_comm_i,  // Communication from L1 TLB to PTW/L2 TLB.
     output l1_l2_comm_t l1_l2_comm_o   // Communication from PTW/L2 TLB to L1 TLB.
 );
+    // Break combinational feedback from the PTW/L2 response path to request generation.
+    l2_l1_comm_t l2_l1_comm_q;
+    always_ff @(posedge clk_i) begin
+        if (!rstn_i) begin
+            l2_l1_comm_q <= '0;
+        end else begin
+            l2_l1_comm_q <= l2_l1_comm_i;
+        end
+    end
+
     // -------------------------------------------------------------------------
     // TLB Storage: A generalisation of the TLB Table
     // -------------------------------------------------------------------------
@@ -91,7 +101,7 @@ module l1_tlb
     for (genvar port = 0; port < NUM_TLB_PORTS; ++port) begin : g_hit_logic
         logic store_hit, read_ok, write_ok, exec_ok;
         pte_perm_check pte_perm_check_it (
-            .ptw_status_i (l2_l1_comm_i.ptw_status),
+            .ptw_status_i (l2_l1_comm_q.ptw_status),
             .tlb_entry_i  (hit_entry_per_port[port]),
             .sv_priv_lvl_i(core_tlb_comms_i[port].priv_lvl != '0),
             .is_store_i   (core_tlb_comms_i[port].req.store),
@@ -141,7 +151,7 @@ module l1_tlb
     logic                                                       miss_active;
     logic [(NUM_TLB_PORTS > 1 ? $clog2(NUM_TLB_PORTS) : 1)-1:0] miss_port;
 
-    tlb_miss_serialiser #(
+    request_serialiser #(
         .NUM_PORTS(NUM_TLB_PORTS)
     ) tlb_miss_serialiser (
         .clk_i       (clk_i),
@@ -153,10 +163,8 @@ module l1_tlb
     );
 
     // TODO: check this logic?
-    assign miss_grant_next = l2_l1_comm_i.ptw_ready;
-    // (
-    //     !l2_l1_comm_i.resp.valid && l2_l1_comm_i.ptw_ready
-    // ) || (l2_l1_comm_i.resp.valid && !l2_l1_comm_i.ptw_ready);
+    // We can grant the next miss when the FSM has finished processing the current miss;
+    assign miss_grant_next = fsm_finished;
 
     logic tlb_hit, tlb_miss, store_hit, vm_enable, passthrough, hit_cam;
     tlb_entry_t                    hit_entry;
@@ -176,7 +184,7 @@ module l1_tlb
     always_comb begin
         clear_tlb  = 1'b0;
         clear_mask = '0;
-        if (l2_l1_comm_i.invalidate_tlb) begin
+        if (l2_l1_comm_q.invalidate_tlb) begin
             clear_tlb  = 1'b1;
             clear_mask = 'hFF;
         end else if (clear_tlb_req) begin
@@ -187,18 +195,18 @@ module l1_tlb
     end
 
     // L1 Miss Request FSM
-    logic store_tlb_req, send_tlb_req, write_tlb, clear_tlb, fsm_ready;
+    logic store_tlb_req, send_tlb_req, write_tlb, clear_tlb, fsm_finished;
     miss_req_fsm miss_req_fsm (
         .clk_i           (clk_i),
         .rstn_i          (rstn_i),
         // Input Flags
         .req_valid_i     (core_tlb_comms_i[miss_port].req.valid),
         .tlb_miss_i      (tlb_miss),
-        .ptw_ready_i     (l2_l1_comm_i.ptw_ready),
-        .invalidate_tlb_i(l2_l1_comm_i.invalidate_tlb),
-        .rsp_valid_i     (l2_l1_comm_i.resp.valid),
+        .ptw_ready_i     (l2_l1_comm_q.ptw_ready),
+        .invalidate_tlb_i(l2_l1_comm_q.invalidate_tlb),
+        .rsp_valid_i     (l2_l1_comm_q.resp.valid),
         // Output Flags
-        .fsm_idle_o      (fsm_ready),
+        .fsm_finished_o  (fsm_finished),
         .store_tlb_req_o (store_tlb_req),
         .send_tlb_req_o  (send_tlb_req),
         .write_tlb_o     (write_tlb),
@@ -251,17 +259,17 @@ module l1_tlb
     assign tlb_storage_write_comm.update_req.write_idx = tlb_req_tmp.write_idx;
     assign tlb_storage_write_comm.update_req.write_entry.vpn = tlb_req_tmp.vpn;
     assign tlb_storage_write_comm.update_req.write_entry.asid = tlb_req_tmp.asid;
-    assign tlb_storage_write_comm.update_req.write_entry.ppn = l2_l1_comm_i.resp.pte.ppn;
-    assign tlb_storage_write_comm.update_req.write_entry.level = l2_l1_comm_i.resp.level;
-    assign tlb_storage_write_comm.update_req.write_entry.dirty = l2_l1_comm_i.resp.pte.d;
-    assign tlb_storage_write_comm.update_req.write_entry.access = l2_l1_comm_i.resp.pte.a;
-    assign tlb_storage_write_comm.update_req.write_entry.perms.ur = l2_l1_comm_i.resp.pte.r & l2_l1_comm_i.resp.pte.u & l2_l1_comm_i.resp.pte.v;
-    assign tlb_storage_write_comm.update_req.write_entry.perms.uw = l2_l1_comm_i.resp.pte.w & l2_l1_comm_i.resp.pte.u & l2_l1_comm_i.resp.pte.v;
-    assign tlb_storage_write_comm.update_req.write_entry.perms.ux = l2_l1_comm_i.resp.pte.x & l2_l1_comm_i.resp.pte.u & l2_l1_comm_i.resp.pte.v;
-    assign tlb_storage_write_comm.update_req.write_entry.perms.sr = l2_l1_comm_i.resp.pte.r & !l2_l1_comm_i.resp.pte.u & l2_l1_comm_i.resp.pte.v;
-    assign tlb_storage_write_comm.update_req.write_entry.perms.sw = l2_l1_comm_i.resp.pte.w & !l2_l1_comm_i.resp.pte.u & l2_l1_comm_i.resp.pte.v;
-    assign tlb_storage_write_comm.update_req.write_entry.perms.sx = l2_l1_comm_i.resp.pte.x & !l2_l1_comm_i.resp.pte.u & l2_l1_comm_i.resp.pte.v;
-    assign tlb_storage_write_comm.update_req.write_entry.valid = !l2_l1_comm_i.resp.error;
+    assign tlb_storage_write_comm.update_req.write_entry.ppn = l2_l1_comm_q.resp.pte.ppn;
+    assign tlb_storage_write_comm.update_req.write_entry.level = l2_l1_comm_q.resp.level;
+    assign tlb_storage_write_comm.update_req.write_entry.dirty = l2_l1_comm_q.resp.pte.d;
+    assign tlb_storage_write_comm.update_req.write_entry.access = l2_l1_comm_q.resp.pte.a;
+    assign tlb_storage_write_comm.update_req.write_entry.perms.ur = l2_l1_comm_q.resp.pte.r & l2_l1_comm_q.resp.pte.u & l2_l1_comm_q.resp.pte.v;
+    assign tlb_storage_write_comm.update_req.write_entry.perms.uw = l2_l1_comm_q.resp.pte.w & l2_l1_comm_q.resp.pte.u & l2_l1_comm_q.resp.pte.v;
+    assign tlb_storage_write_comm.update_req.write_entry.perms.ux = l2_l1_comm_q.resp.pte.x & l2_l1_comm_q.resp.pte.u & l2_l1_comm_q.resp.pte.v;
+    assign tlb_storage_write_comm.update_req.write_entry.perms.sr = l2_l1_comm_q.resp.pte.r & !l2_l1_comm_q.resp.pte.u & l2_l1_comm_q.resp.pte.v;
+    assign tlb_storage_write_comm.update_req.write_entry.perms.sw = l2_l1_comm_q.resp.pte.w & !l2_l1_comm_q.resp.pte.u & l2_l1_comm_q.resp.pte.v;
+    assign tlb_storage_write_comm.update_req.write_entry.perms.sx = l2_l1_comm_q.resp.pte.x & !l2_l1_comm_q.resp.pte.u & l2_l1_comm_q.resp.pte.v;
+    assign tlb_storage_write_comm.update_req.write_entry.valid = !l2_l1_comm_q.resp.error;
     assign tlb_storage_write_comm.update_req.write_entry.nempty = 1'b1;
     assign tlb_storage_write_comm.clear_req.clear_tlb = clear_tlb;
     assign tlb_storage_write_comm.clear_req.clear_mask = clear_mask;

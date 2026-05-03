@@ -21,16 +21,32 @@ module l1_tlb_serialiser
     // Arbiter
     // -------------------------------------------------------------------------
 
-    logic [ NUM_TLB_PORTS-1:0] grant_reqs;
-    logic [TLB_PORT_IDX_W-1:0] grant_idx;
-    logic                      grant_valid;
-
+    logic [NUM_TLB_PORTS-1:0] miss_reqs;
     for (genvar i = 0; i < NUM_TLB_PORTS; ++i) begin : g_req_valid
-        assign grant_reqs[i] = tlb_ptw_comms_i[i].req.valid;
+        assign miss_reqs[i] = tlb_ptw_comms_i[i].req.valid;
     end
 
     // -------------------------------------------------------------------------
-    // FSM: one PTW request in-flight at a time
+    // Request Serialiser
+    // -------------------------------------------------------------------------
+
+    logic                      miss_active;
+    logic [TLB_PORT_IDX_W-1:0] miss_port;
+
+    request_serialiser #(
+        .NUM_PORTS(NUM_TLB_PORTS)
+    ) tlb_req_serialiser (
+        .clk_i       (clk_i),
+        .rstn_i      (rstn_i),
+        .tlb_misses_i(miss_reqs),
+        // allow the next miss to be granted when the FSM has finished processing the current miss
+        .grant_next_i(fsm_finished),
+        .active_o    (miss_active),
+        .active_idx_o(miss_port)
+    );
+
+    // -------------------------------------------------------------------------
+    // Dispatch FSM
     // -------------------------------------------------------------------------
 
     typedef enum logic [1:0] {
@@ -38,93 +54,59 @@ module l1_tlb_serialiser
         S_WAIT_ACCEPT,
         S_WAIT_RSP
     } state_t;
+    state_t state, state_n;
 
-    state_t state_q, state_d;
-    logic [TLB_PORT_IDX_W-1:0] sel_idx_q, sel_idx_d;
-    tlb_ptw_req_t sel_req_q, sel_req_d;
-    logic sel_valid_q, sel_valid_d;
+    logic fsm_finished;
+    assign fsm_finished = state != S_IDLE && state_n == S_IDLE;
 
-    VX_generic_arbiter #(
-        .NUM_REQS(NUM_TLB_PORTS),
-        .TYPE    ("P"),
-        .STICKY  (1)
-    ) tlb_req_arbiter (
-        .clk        (clk_i),
-        .reset      (~rstn_i),
-        .requests   (grant_reqs),
-        .grant_index(grant_idx),
-        `UNUSED_PIN(grant_onehot),
-        .grant_valid(grant_valid),
-        .grant_ready(state_q == S_IDLE)  // pop only when idle
-    );
+    always_comb begin
+        state_n = state;
+        if (!rstn_i) begin
+            state_n = S_IDLE;
+        end else begin
+            unique case (state)
+                S_IDLE: begin
+                    if (miss_active) begin
+                        state_n = S_WAIT_ACCEPT;
+                    end
+                end
+                S_WAIT_ACCEPT: begin
+                    if (ptw_tlb_comm_i.ptw_ready) begin
+                        state_n = S_WAIT_RSP;
+                    end
+                end
+                S_WAIT_RSP: begin
+                    if (ptw_tlb_comm_i.resp.valid) begin
+                        state_n = S_IDLE;
+                    end
+                end
+                default: begin
+                    state_n = S_IDLE;
+                end
+            endcase
+        end
+    end
 
     always_ff @(posedge clk_i) begin
         if (!rstn_i) begin
-            state_q     <= S_IDLE;
-            sel_idx_q   <= '0;
-            sel_req_q   <= '0;
-            sel_valid_q <= 1'b0;
+            state <= S_IDLE;
         end else begin
-            state_q     <= state_d;
-            sel_idx_q   <= sel_idx_d;
-            sel_req_q   <= sel_req_d;
-            sel_valid_q <= sel_valid_d;
+            state <= state_n;
         end
     end
 
     // -------------------------------------------------------------------------
-    // Datapath mux
+    // Output Muxes
     // -------------------------------------------------------------------------
-
-    // One in-flight request at a time:
-    // 1) pop/latch winner in IDLE,
-    // 2) wait for ptw_ready accept,
-    // 3) wait for response, then release.
-    always_comb begin
-        state_d     = state_q;
-        sel_idx_d   = sel_idx_q;
-        sel_req_d   = sel_req_q;
-        sel_valid_d = sel_valid_q;
-
-        unique case (state_q)
-            S_IDLE: begin
-                sel_valid_d = 1'b0;
-                if (grant_valid) begin
-                    sel_idx_d   = grant_idx;
-                    sel_req_d   = tlb_ptw_comms_i[grant_idx].req;
-                    sel_valid_d = 1'b1;
-                    state_d     = S_WAIT_ACCEPT;
-                end
-            end
-            S_WAIT_ACCEPT: begin
-                if (ptw_tlb_comm_i.ptw_ready) begin
-                    state_d = S_WAIT_RSP;
-                end
-            end
-            S_WAIT_RSP: begin
-                if (ptw_tlb_comm_i.resp.valid) begin
-                    sel_valid_d = 1'b0;
-                    state_d     = S_IDLE;
-                end
-            end
-            default: begin
-                sel_valid_d = 1'b0;
-                state_d     = S_IDLE;
-            end
-        endcase
+    logic fsm_serving;
+    assign fsm_serving    = (state == S_WAIT_ACCEPT) || (state == S_WAIT_RSP);
+    assign tlb_ptw_comm_o = fsm_serving ? tlb_ptw_comms_i[miss_port] : '0;
+    for (genvar i = 0; i < NUM_TLB_PORTS; ++i) begin : g_resp_mux
+        assign ptw_tlb_comms_o[i].resp = fsm_serving && miss_port == i ? ptw_tlb_comm_i.resp : '0;
+        assign ptw_tlb_comms_o[i].ptw_ready = fsm_serving && miss_port == i ? ptw_tlb_comm_i.ptw_ready : 1'b0;
+        assign ptw_tlb_comms_o[i].ptw_status = ptw_tlb_comm_i.ptw_status;
+        assign ptw_tlb_comms_o[i].invalidate_tlb = ptw_tlb_comm_i.invalidate_tlb;
     end
 
-    always_comb begin
-        tlb_ptw_comm_o = '0;
-        if (sel_valid_q && (state_q == S_WAIT_ACCEPT)) begin
-            tlb_ptw_comm_o.req       = sel_req_q;
-            tlb_ptw_comm_o.req.valid = 1'b1;
-        end
-
-        for (int i = 0; i < NUM_TLB_PORTS; ++i) begin
-            ptw_tlb_comms_o[i] = (sel_valid_q && (sel_idx_q == TLB_PORT_IDX_W'(i)))
-                                ? ptw_tlb_comm_i : '0;
-        end
-    end
 
 endmodule
