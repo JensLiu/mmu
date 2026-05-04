@@ -86,7 +86,7 @@ module l1_tlb
         assign hit_entry_per_port[i] = storage_tlb_read_comms[i].read_resp.hit_entry;
         assign hit_level_per_port[i] = storage_tlb_read_comms[i].read_resp.hit_level;
         assign hit_idx_per_port[i] = storage_tlb_read_comms[i].read_resp.hit_idx;
-        assign tlb_miss_per_port[i] = vm_enable && !(hit_cam_per_port[i]);
+        assign tlb_miss_per_port[i] = core_tlb_comms_i[i].req.valid && vm_enable && !(hit_cam_per_port[i]);
         assign vpn_per_port[i] = core_tlb_comms_i[i].req.vpn;
     end
 
@@ -221,6 +221,8 @@ module l1_tlb
         .rstn_i                 (rstn_i),
         .access_hit_i           (hit_cam),
         .access_idx_i           (hit_idx),
+        .write_event_i          (write_tlb),
+        .write_idx_i            (tlb_req_tmp.write_idx),
         .tlb_has_invalid_entry_i(tlb_has_invalid_entry),
         .tlb_invalid_entry_idx_i(tlb_invalid_entry_idx),
         .evict_idx_o            (eviction_idx)
@@ -329,7 +331,7 @@ module l1_tlb
     for (genvar i = 0; i < NUM_TLB_PORTS; ++i) begin : g_tlb_resp
         // Not bypass implemented to simplify wiring
         // the PTW/L2 TLB response will update the TLB and we will find hit in the next cycle
-        assign tlb_core_comms_o[i].resp.miss       = tlb_miss_per_port[i];
+        assign tlb_core_comms_o[i].resp.miss       = core_tlb_comms_i[i].req.valid ? tlb_miss_per_port[i] : 1'b0;
         assign tlb_core_comms_o[i].resp.xcpt.load  = xcpt_lds[i];
         assign tlb_core_comms_o[i].resp.xcpt.store = xcpt_sts[i];
         assign tlb_core_comms_o[i].resp.xcpt.fetch = xcpt_ifs[i];

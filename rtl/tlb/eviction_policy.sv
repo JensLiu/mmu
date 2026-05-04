@@ -9,6 +9,10 @@ module eviction_policy
     input logic                    access_hit_i,
     input logic [TLB_IDX_SIZE-1:0] access_idx_i,
 
+    // Write Inputs (mark freshly-written entries as recently used)
+    input logic                    write_event_i,
+    input logic [TLB_IDX_SIZE-1:0] write_idx_i,
+
     // Invalid Entry Inputs
     input logic                    tlb_has_invalid_entry_i,
     input logic [TLB_IDX_SIZE-1:0] tlb_invalid_entry_idx_i,
@@ -25,8 +29,8 @@ module eviction_policy
     ) plru (
         .clk_i            (clk_i),
         .rstn_i           (rstn_i),
-        .access_hit_i     (access_hit_i),
-        .access_idx_i     (access_idx_i),
+        .access_hit_i     (access_hit_i || write_event_i),
+        .access_idx_i     (write_event_i ? write_idx_i : access_idx_i),
         .replacement_idx_o(plru_evict_idx)
     );
 
