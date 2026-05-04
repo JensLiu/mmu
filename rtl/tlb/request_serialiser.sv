@@ -29,7 +29,7 @@ module request_serialiser
 
     VX_generic_arbiter #(
         .NUM_REQS(NUM_PORTS),
-        .TYPE    ("P"),
+        .TYPE    ("R"),
         .STICKY  (1)
     ) tlb_miss_arbiter (
         .clk        (clk_i),
