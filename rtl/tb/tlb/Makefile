@@ -18,7 +18,7 @@ SV_SRCS := \
 	$(BSC_MMU_ROOT)/rtl/tlb/tlb_storage.sv \
 	$(BSC_MMU_ROOT)/rtl/tlb/pte_perm_check.sv \
 	$(BSC_MMU_ROOT)/rtl/tlb/miss_req_fsm.sv \
-	$(BSC_MMU_ROOT)/rtl/tlb/tlb_miss_serialiser.sv \
+	$(BSC_MMU_ROOT)/rtl/tlb/request_serialiser.sv \
 	$(BSC_MMU_ROOT)/rtl/tlb/eviction_policy.sv \
 	$(BSC_MMU_ROOT)/rtl/tlb/l1_tlb.sv \
 	$(VORTEX_RTL)/libs/VX_priority_encoder.sv \

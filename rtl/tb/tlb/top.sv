@@ -59,7 +59,13 @@ module top;
     core_tlb_comm_t core_tlb_comms_i[NUM_TLB_PORTS];
     tlb_core_comm_t tlb_core_comms_o[NUM_TLB_PORTS];
     l2_l1_comm_t    l2_l1_comm_i;
+    l2_l1_comm_t    l2_l1_comm_q_tb;
     l1_l2_comm_t    l1_l2_comm_o;
+
+    always_ff @(posedge clk_i or negedge rstn_i) begin
+        if (!rstn_i) l2_l1_comm_q_tb <= '0;
+        else l2_l1_comm_q_tb <= l2_l1_comm_i;
+    end
 
     l1_tlb #(
         .NUM_TLB_PORTS(NUM_TLB_PORTS)
@@ -152,7 +158,7 @@ module top;
     end
 
     // -------------------------------------------------------------------------
-    // Reference fills (shadow what becomes resident after the PTW write completes)
+    // Reference fills (resident timing matches DUT: PTW sampled through l2_l1_comm_q)
     // -------------------------------------------------------------------------
     logic [PPN_SIZE-1:0] ref_ppn[tb_xref_k_t];
 
@@ -161,7 +167,7 @@ module top;
     endfunction
 
     // -------------------------------------------------------------------------
-    // Scoreboard — expect miss iff key not yet installed (same timing as storage)
+    // Scoreboard — expect miss iff key not yet resident (aligned with mirrored PTW path)
     // -------------------------------------------------------------------------
     int unsigned sb_err;
     logic        sb_enable;
@@ -201,7 +207,7 @@ module top;
         end
     endfunction
 
-    // Single sequential block: scoreboard sees ref state *before* this cycle's PTW fill applies.
+    // Ref updates mirror l1_tlb's l2_l1_comm_q: PTW handshake seen by Miss FSM is one clk after iface.
     always_ff @(posedge clk_i or negedge rstn_i) begin
         if (!rstn_i) begin
             ref_clear();
@@ -209,9 +215,9 @@ module top;
             if (sb_enable) begin
                 for (int p = 0; p < int'(NUM_TLB_PORTS); p++) sb_check_port(p);
             end
-            if (l2_l1_comm_i.invalidate_tlb) begin
+            if (l2_l1_comm_q_tb.invalidate_tlb) begin
                 ref_clear();
-            end else if (l2_l1_comm_i.resp.valid && !l2_l1_comm_i.resp.error) begin
+            end else if (l2_l1_comm_q_tb.resp.valid && !l2_l1_comm_q_tb.resp.error) begin
                 ref_ppn[tb_pack(mw_accept_vpn, mw_accept_asid)] = mw_accept_ppn;
             end
         end
