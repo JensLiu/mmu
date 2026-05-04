@@ -332,11 +332,11 @@ module l1_tlb
         // Not bypass implemented to simplify wiring
         // the PTW/L2 TLB response will update the TLB and we will find hit in the next cycle
         assign tlb_core_comms_o[i].resp.miss       = core_tlb_comms_i[i].req.valid ? tlb_miss_per_port[i] : 1'b0;
-        assign tlb_core_comms_o[i].resp.xcpt.load  = xcpt_lds[i];
+        assign tlb_core_comms_o[i].resp.xcpt.load = xcpt_lds[i];
         assign tlb_core_comms_o[i].resp.xcpt.store = xcpt_sts[i];
         assign tlb_core_comms_o[i].resp.xcpt.fetch = xcpt_ifs[i];
-        assign tlb_core_comms_o[i].resp.ppn        = ppn_translated_per_port[i];
-        assign tlb_core_comms_o[i].resp.hit_idx    = 'h0;
+        assign tlb_core_comms_o[i].resp.ppn = ppn_translated_per_port[i];
+        assign tlb_core_comms_o[i].resp.hit_idx = 'h0;
     end
 
 endmodule
