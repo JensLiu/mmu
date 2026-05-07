@@ -25,7 +25,9 @@ module bsc_mmu
 #(
     parameter int unsigned XLEN               = 32,
     parameter int unsigned NUM_CORES          = 1,
-    parameter int unsigned NUM_DTLBS_PER_CORE = 1
+    parameter int unsigned NUM_DTLBS_PER_CORE = 1,
+    parameter int unsigned L1_TLB_ENTRIES     = 8,
+    parameter int unsigned L2_TLB_ENTRIES     = 16
 ) (
     input logic clk_i,
     input logic rstn_i,
@@ -51,10 +53,13 @@ module bsc_mmu
     tlb_ptw_comm_t d_l1_l2_comm_per_core[NUM_CORES];
     ptw_tlb_comm_t d_l2_l1_comm_per_core[NUM_CORES];
 
+    `UNUSED_VAR(L2_TLB_ENTRIES)
+
     // L1 TLBs
     for (genvar i = 0; i < NUM_CORES; ++i) begin : g_itlb
         l1_tlb #(
-            .NUM_TLB_PORTS(1)
+            .NUM_TLB_PORTS(1),
+            .TLB_ENTRIES  (L1_TLB_ENTRIES)
         ) l1_itlb_inst (
             .clk_i           (clk_i),
             .rstn_i          (rstn_i),
@@ -65,7 +70,8 @@ module bsc_mmu
         );
 
         l1_tlb #(
-            .NUM_TLB_PORTS(NUM_DTLBS_PER_CORE)
+            .NUM_TLB_PORTS(NUM_DTLBS_PER_CORE),
+            .TLB_ENTRIES  (L1_TLB_ENTRIES)
         ) l1_dtlb_inst (
             .clk_i           (clk_i),
             .rstn_i          (rstn_i),
@@ -123,8 +129,8 @@ module bsc_mmu
         .csr_ptw_comm_i(csr_ptw_comm_i),
 
         // pmu interface
-        .pmu_ptw_hit_o (pmu_ptw_hit_o),
-        .pmu_ptw_miss_o(pmu_ptw_miss_o)
+        `UNUSED_PIN(pmu_ptw_hit_o),
+        `UNUSED_PIN(pmu_ptw_miss_o)
     );
 
 endmodule

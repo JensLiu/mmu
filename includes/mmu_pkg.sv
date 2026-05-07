@@ -46,9 +46,6 @@ package mmu_pkg;
     parameter PTESIZE = 4;  // PTE size in bytes
 `endif
 
-    parameter TLB_ENTRIES = 8;
-    parameter TLB_IDX_SIZE = $clog2(TLB_ENTRIES);
-
     parameter PTW_CACHE_SIZE = $clog2(LEVELS * 2);
 
 `ifdef XLEN_64
@@ -137,42 +134,6 @@ package mmu_pkg;
         logic nempty;
     } tlb_entry_t;  // TLB page entry.
 
-    // ----------------------------------------------------------
-    // TLB Storage Interface
-    // ----------------------------------------------------------
-    typedef struct packed {
-        logic [ASID_SIZE-1:0] asid;
-        logic [VPN_SIZE-1:0]  vpn;
-    } storage_read_req_t;
-
-    typedef struct packed {
-        logic                    is_hit;
-        logic [TLB_IDX_SIZE-1:0] hit_idx;
-        logic [LEVEL_BITS-1:0]   hit_level;
-        tlb_entry_t              hit_entry;
-    } storage_read_resp_t;
-
-    typedef struct packed {
-        // Write operation
-        logic                    write_tlb;
-        logic [TLB_IDX_SIZE-1:0] write_idx;
-        tlb_entry_t              write_entry;
-    } storage_update_req_t;
-
-    typedef struct packed {
-        logic                   clear_tlb;
-        logic [TLB_ENTRIES-1:0] clear_mask;
-    } storage_clear_req_t;
-
-    typedef struct packed {storage_read_req_t read_req;} tlb_storage_read_comm_t;
-
-    typedef struct packed {
-        storage_update_req_t update_req;
-        storage_clear_req_t  clear_req;
-    } tlb_storage_write_comm_t;
-
-    typedef struct packed {storage_read_resp_t read_resp;} storage_tlb_read_comm_t;
-
     // ---------------------------------------------------------
     //  Core-TLB communication
     // ---------------------------------------------------------
@@ -257,13 +218,6 @@ package mmu_pkg;
     typedef tlb_ptw_comm_t l2_ptw_comm_t;
     typedef ptw_tlb_comm_t ptw_l2_comm_t;
 
-    typedef struct packed {
-        logic [VPN_SIZE-1:0] vpn;  // Virtual page number.
-        logic [ASID_SIZE-1:0] asid;  // Address space identifier.
-        logic store;  // Store operation.
-        logic fetch;  // Fetch operation.
-        logic [TLB_IDX_SIZE-1:0]    write_idx;  // Index where the page requested to the PTW will be stored in the TLB's CAM. 
-    } tlb_req_tmp_storage_t;  // Stored information of the translation request saved on a miss.
 
     ////////////////////////////////
     //

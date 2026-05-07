@@ -15,6 +15,7 @@ EXTRA_DEFINES ?= -DTB_NUM_TLB_PORTS=4
 SV_SRCS := \
 	$(BSC_MMU_ROOT)/includes/mmu_pkg.sv \
 	$(BSC_MMU_ROOT)/rtl/common/pseudoLRU.sv \
+	$(BSC_MMU_ROOT)/rtl/tlb/tlb_storage_if.sv \
 	$(BSC_MMU_ROOT)/rtl/tlb/tlb_storage.sv \
 	$(BSC_MMU_ROOT)/rtl/tlb/pte_perm_check.sv \
 	$(BSC_MMU_ROOT)/rtl/tlb/miss_req_fsm.sv \

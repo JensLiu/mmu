@@ -1,10 +1,14 @@
 +incdir+./includes
 ./includes/mmu_pkg.sv
 ./rtl/common/pseudoLRU.sv
+./rtl/tlb/tlb_storage_if.sv
+./rtl/tlb/tlb_storage.sv
+./rtl/tlb/pte_perm_check.sv
+./rtl/tlb/miss_req_fsm.sv
+./rtl/tlb/request_serialiser.sv
+./rtl/tlb/eviction_policy.sv
 ./rtl/ptw/ptw_arb.sv
 ./rtl/ptw/ptw.sv
-./rtl/tlb/tlb_miss_serialiser.sv
 ./rtl/tlb/l1_tlb.sv
-./rtl/tlb/tlb.sv
 ./rtl/l1_tlb_serialiser.sv
 ./rtl/bsc_mmu.sv

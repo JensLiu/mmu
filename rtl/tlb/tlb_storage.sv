@@ -23,23 +23,16 @@
 module tlb_storage
     import mmu_pkg::*;
 #(
-    parameter int unsigned NUM_READ_PORTS = 1
+    parameter int unsigned NUM_READ_PORTS = 1,
+    parameter int unsigned TLB_ENTRIES
 ) (
     input logic clk_i,  // System clock signal.
     input logic rstn_i, // System reset signal (active low).
 
-    // read ports
-    input  tlb_storage_read_comm_t tlb_storage_read_comms_i[NUM_READ_PORTS],
-    output storage_tlb_read_comm_t storage_tlb_read_comms_o[NUM_READ_PORTS],
-
-    // write port
-    input tlb_storage_write_comm_t tlb_storage_write_comm_i,
-    // output storage_tlb_write_comm_t storage_tlb_write_comm_o
-
-    // Storage Status Outputs
-    output logic                   tlb_has_invalid_entry_o,
-    output logic [TLB_ENTRIES-1:0] some_tlb_invalid_entry_idx_o
+    tlb_storage_if.slave tlb_storage_if
 );
+
+    localparam int unsigned TLB_IDX_SIZE = $clog2(TLB_ENTRIES);
 
     tlb_entry_t [TLB_ENTRIES-1:0] tlb_entries;
 
@@ -70,9 +63,9 @@ module tlb_storage
         //   SV39 (LEVELS=3, PAGE_LVL_BITS=9): l=0→vpn[26:18], l=1→vpn[26:9], l=2→vpn[26:0]
         //   SV32 (LEVELS=2, PAGE_LVL_BITS=10): l=0→vpn[19:10], l=1→vpn[19:0]
 
-        assign cache_vpn_per_port[port] = tlb_storage_read_comms_i[port].read_req.vpn;
+        assign cache_vpn_per_port[port] = tlb_storage_if.read_req[port].vpn;
         logic [ASID_SIZE-1:0] cache_asid;
-        assign cache_asid = tlb_storage_read_comms_i[port].read_req.asid;
+        assign cache_asid = tlb_storage_if.read_req[port].asid;
 
         for (genvar lvl = 0; lvl < LEVELS; lvl++) begin : g_cam_hits
             // Number of VPN bits to compare for a leaf at PTW level lvl.
@@ -118,8 +111,8 @@ module tlb_storage
     // -------------------------------------------------------------------------
     logic unsigned [TLB_IDX_SIZE-1:0] invalid_entry_idx;
     logic                             invalid_entry_found;
-    assign tlb_has_invalid_entry_o      = invalid_entry_found;
-    assign some_tlb_invalid_entry_idx_o = invalid_entry_idx;
+    assign tlb_storage_if.tlb_has_invalid_entry = invalid_entry_found;
+    assign tlb_storage_if.tlb_invalid_entry_idx     = invalid_entry_idx;
     always_comb begin
         invalid_entry_found = 1'b0;
         invalid_entry_idx   = '0;
@@ -142,14 +135,14 @@ module tlb_storage
     logic       [TLB_IDX_SIZE-1:0] write_idx;
     tlb_entry_t                    write_entry;
 
-    assign clear_tlb   = tlb_storage_write_comm_i.clear_req.clear_tlb;
-    assign write_tlb   = tlb_storage_write_comm_i.update_req.write_tlb;
-    assign write_idx   = tlb_storage_write_comm_i.update_req.write_idx;
-    assign write_entry = tlb_storage_write_comm_i.update_req.write_entry;
+    assign clear_tlb   = tlb_storage_if.clear_req.clear_tlb;
+    assign write_tlb   = tlb_storage_if.update_req.write_tlb;
+    assign write_idx   = tlb_storage_if.update_req.write_idx;
+    assign write_entry = tlb_storage_if.update_req.write_entry;
 
     for (genvar i = 0; i < TLB_ENTRIES; ++i) begin : g_clear_mask
         // flush also invalid entries
-        assign clear_mask[i] = !tlb_entries[i].valid || tlb_storage_write_comm_i.clear_req.clear_mask[i];
+        assign clear_mask[i] = !tlb_entries[i].valid || tlb_storage_if.clear_req.clear_mask[i];
     end
 
     always_ff @(posedge clk_i) begin
@@ -176,10 +169,10 @@ module tlb_storage
             for (int hl = LEVELS - 1; hl >= 0; hl--) begin
                 if (hit_per_lvl_per_port[port][hl]) hit_lvl_sel = LEVEL_BITS'(hl);
             end
-            storage_tlb_read_comms_o[port].read_resp.is_hit = hit_cam_per_port[port];
-            storage_tlb_read_comms_o[port].read_resp.hit_idx = hit_idx_per_port[port];
-            storage_tlb_read_comms_o[port].read_resp.hit_level = hit_lvl_sel;
-            storage_tlb_read_comms_o[port].read_resp.hit_entry = tlb_entries[hit_idx_per_port[port]];
+            tlb_storage_if.read_resp[port].is_hit    = hit_cam_per_port[port];
+            tlb_storage_if.read_resp[port].hit_idx   = hit_idx_per_port[port];
+            tlb_storage_if.read_resp[port].hit_level = hit_lvl_sel;
+            tlb_storage_if.read_resp[port].hit_entry = tlb_entries[hit_idx_per_port[port]];
         end
     end
 
