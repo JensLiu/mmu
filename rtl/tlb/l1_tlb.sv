@@ -1,16 +1,16 @@
 /*
  * Copyright 2023 BSC*
  * *Barcelona Supercomputing Center (BSC)
- * 
+ *
  * SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
- * 
+ *
  * Licensed under the Solderpad Hardware License v 2.1 (the “License”); you
  * may not use this file except in compliance with the License, or, at your
  * option, the Apache License version 2.0. You may obtain a copy of the
  * License at
- * 
+ *
  * https://solderpad.org/licenses/SHL-2.1/
- * 
+ *
  * Unless required by applicable law or agreed to in writing, any work
  * distributed under the License is distributed on an “AS IS” BASIS, WITHOUT
  * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
@@ -164,7 +164,7 @@ module l1_tlb
 
     // TODO: check this logic?
     // We can grant the next miss when the FSM has finished processing the current miss;
-    assign miss_grant_next = fsm_finished;
+    assign miss_grant_next = req_finished;
 
     logic tlb_hit, tlb_miss, store_hit, vm_enable, passthrough, hit_cam;
     tlb_entry_t                    hit_entry;
@@ -195,24 +195,21 @@ module l1_tlb
     end
 
     // L1 Miss Request FSM
-    logic store_tlb_req, send_tlb_req, write_tlb, clear_tlb, fsm_finished;
-    miss_req_fsm miss_req_fsm (
+    logic write_tlb, clear_tlb, req_finished, req_inflight;
+    l2_req_fsm miss_req_fsm (
         .clk_i           (clk_i),
         .rstn_i          (rstn_i),
         // Input Flags
         .req_valid_i     (core_tlb_comms_i[miss_port].req.valid),
         .tlb_miss_i      (tlb_miss),
-        .ptw_ready_i     (l2_l1_comm_q.ptw_ready),
         .invalidate_tlb_i(l2_l1_comm_q.invalidate_tlb),
         .rsp_valid_i     (l2_l1_comm_q.resp.valid),
         // Output Flags
-        .fsm_finished_o  (fsm_finished),
-        .store_tlb_req_o (store_tlb_req),
-        .send_tlb_req_o  (send_tlb_req),
+        .req_inflight_o  (req_inflight),
+        .req_finished_o  (req_finished),
         .write_tlb_o     (write_tlb),
         .clear_tlb_o     (clear_tlb_req)
     );
-
 
     // Eviction / Victim Selection
     logic unsigned [TLB_IDX_SIZE-1:0] eviction_idx;
@@ -224,53 +221,28 @@ module l1_tlb
         .access_hit_i           (hit_cam),
         .access_idx_i           (hit_idx),
         .write_event_i          (write_tlb),
-        .write_idx_i            (tlb_req_tmp.write_idx),
+        .write_idx_i            (eviction_idx),
         .tlb_has_invalid_entry_i(tlb_storage_if.tlb_has_invalid_entry),
         .tlb_invalid_entry_idx_i(tlb_storage_if.tlb_invalid_entry_idx),
         .evict_idx_o            (eviction_idx)
     );
 
-    // L1-L2 TLB request temporary storage
-    typedef struct packed {
-        logic [VPN_SIZE-1:0] vpn;  // Virtual page number.
-        logic [ASID_SIZE-1:0] asid;  // Address space identifier.
-        logic store;  // Store operation.
-        logic fetch;  // Fetch operation.
-        logic [TLB_IDX_SIZE-1:0]    write_idx;  // Index where the page requested to the PTW will be stored in the TLB's CAM. 
-    } tlb_req_tmp_storage_t;  // Stored information of the translation request saved on a miss.
-
-    tlb_req_tmp_storage_t tlb_req_tmp;
-    always_ff @(posedge clk_i) begin
-        if (!rstn_i) begin
-            tlb_req_tmp <= '0;
-        end else if (store_tlb_req) begin
-            tlb_req_tmp.vpn       <= core_tlb_comms_i[miss_port].req.vpn[VPN_SIZE-1:0];
-            tlb_req_tmp.asid      <= core_tlb_comms_i[miss_port].req.asid;
-            tlb_req_tmp.store     <= core_tlb_comms_i[miss_port].req.store;
-            tlb_req_tmp.fetch     <= core_tlb_comms_i[miss_port].req.instruction;
-            tlb_req_tmp.write_idx <= eviction_idx;
-        end
-    end
-
     // L1-L2 TLB send request
     always_comb begin
-        if (send_tlb_req) begin
-            l1_l2_comm_o.req.valid = 1'b1;
-            l1_l2_comm_o.req.vpn = tlb_req_tmp.vpn;
-            l1_l2_comm_o.req.asid = tlb_req_tmp.asid;
-            l1_l2_comm_o.req.prv = core_tlb_comms_i[miss_port].priv_lvl; // note that we send the current cycle prv lvl
-            l1_l2_comm_o.req.store = tlb_req_tmp.store;
-            l1_l2_comm_o.req.fetch = tlb_req_tmp.fetch;
-        end else begin
-            l1_l2_comm_o.req = '0;
-        end
+        // Problematic when always asserting the valid flag
+        l1_l2_comm_o.req.valid = req_inflight;
+        l1_l2_comm_o.req.vpn   = core_tlb_comms_i[miss_port].req.vpn[VPN_SIZE-1:0];
+        l1_l2_comm_o.req.asid  = core_tlb_comms_i[miss_port].req.asid;
+        l1_l2_comm_o.req.prv   = core_tlb_comms_i[miss_port].priv_lvl;
+        l1_l2_comm_o.req.store = core_tlb_comms_i[miss_port].req.store;
+        l1_l2_comm_o.req.fetch = core_tlb_comms_i[miss_port].req.instruction;
     end
 
     // TLB Storage communication
     assign tlb_storage_if.update_req.write_tlb = write_tlb;
-    assign tlb_storage_if.update_req.write_idx = tlb_req_tmp.write_idx;
-    assign tlb_storage_if.update_req.write_entry.vpn = tlb_req_tmp.vpn;
-    assign tlb_storage_if.update_req.write_entry.asid = tlb_req_tmp.asid;
+    assign tlb_storage_if.update_req.write_idx = eviction_idx;
+    assign tlb_storage_if.update_req.write_entry.vpn = core_tlb_comms_i[miss_port].req.vpn[VPN_SIZE-1:0];
+    assign tlb_storage_if.update_req.write_entry.asid = core_tlb_comms_i[miss_port].req.asid;
     assign tlb_storage_if.update_req.write_entry.ppn = l2_l1_comm_q.resp.pte.ppn;
     assign tlb_storage_if.update_req.write_entry.level = l2_l1_comm_q.resp.level;
     assign tlb_storage_if.update_req.write_entry.dirty = l2_l1_comm_q.resp.pte.d;
