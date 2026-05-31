@@ -75,12 +75,6 @@ module ptw_arb
     ptw_dtlb_comm_o.resp.pte       = '0;
     ptw_dtlb_comm_o.resp.level     = '0;
 
-    // ptw_itlb_comm_o.ptw_ready      = 1'b0;
-    // ptw_dtlb_comm_o.ptw_ready      = 1'b0;
-
-    ptw_itlb_comm_o.ptw_status     = ptw_tlb_comm_i.ptw_status;
-    ptw_dtlb_comm_o.ptw_status     = ptw_tlb_comm_i.ptw_status;
-
     ptw_itlb_comm_o.invalidate_tlb = ptw_tlb_comm_i.invalidate_tlb;
     ptw_dtlb_comm_o.invalidate_tlb = ptw_tlb_comm_i.invalidate_tlb;
 

@@ -165,8 +165,6 @@ package mmu_pkg;
     logic [PPN_SIZE-1:0] ppn;  // Physical page number.
     tlb_ex_t xcpt;  // Exceptions produced by the requests.
     logic [7:0] hit_idx;  // CAM hit index of the translation request.
-    // L2 TLB to L1 TLB response, discarded for L1 TLB response
-    tlb_entry_t entry;
   } tlb_core_resp_t;  // Translation response.
 
   typedef struct packed {
@@ -187,23 +185,22 @@ package mmu_pkg;
     logic [VPN_SIZE-1:0] vpn;  // Virtual page number.
     logic [ASID_SIZE-1:0] asid;  // Address space identifier.
     logic [1:0]           prv;      // Privilege level of the translation: 2'b00 (User), 2'b01 (Supervisor), 2'b11 (Machine).
+    logic store_hit;    // should write to memory (from L1's perspective)
     logic store;  // Store operation.
     logic fetch;  // Fetch operation.
   } l1_l2_req_t;  // Translation request of the TLB to the PTW.
 
   typedef struct packed {l1_l2_req_t req;} l1_l2_comm_t;  // Communication from L1 TLB to L2 TLB
 
-  // PTW-TLB response
+  // L2-L1 response
   typedef struct packed {
-    logic valid;  // Translation response valid.
-    logic                      error; // An error has ocurred with the translation request. Only check if the response is valid.
-    pte_t pte;  // Page table entry.
-    logic [LEVEL_BITS - 1:0] level;  // Page entry size: 2'b00 (1 GiB Page), 2'b01 (2 MiB Page), 2'b10 (4 KiB Page).
-  } ptw_tlb_resp_t;
+    logic   valid;  // Translation response valid.
+    logic   error; // An error has ocurred with the translation request. Only check if the response is valid.
+    tlb_entry_t tlb_entry;
+  } l2_l1_tlb_resp_t;
 
   typedef struct packed {
-    ptw_tlb_resp_t resp;  // PTW response to TLB translation request.
-    csr_mstatus_t ptw_status;  // mstatus csr register value, sent through the ptw.
+    l2_l1_tlb_resp_t resp;  // PTW response to TLB translation request.
     logic          invalidate_tlb;  // Signal to flush all entries in TLB and don't allocate in-progress transactions with the PTW.
   } l2_l1_comm_t;
 
@@ -224,9 +221,14 @@ package mmu_pkg;
   } l2_ptw_comm_t;
 
   typedef struct packed {
-    ptw_tlb_resp_t resp;  // PTW response to TLB translation request.
-    // logic ptw_ready;  // PTW is ready to receive a translation request.
-    csr_mstatus_t ptw_status;  // mstatus csr register value, sent through the ptw.
+    logic valid;  // Translation response valid.
+    logic                      error; // An error has ocurred with the translation request. Only check if the response is valid.
+    pte_t pte;  // Page table entry.
+    logic [LEVEL_BITS - 1:0] level;  // Page entry size: 2'b00 (1 GiB Page), 2'b01 (2 MiB Page), 2'b10 (4 KiB Page).
+  } ptw_l2_resp_t;
+
+  typedef struct packed {
+    ptw_l2_resp_t resp;  // PTW response to TLB translation request.
     logic          invalidate_tlb;  // Signal to flush all entries in TLB and don't allocate in-progress transactions with the PTW.
   } ptw_l2_comm_t;
 

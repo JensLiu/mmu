@@ -3,7 +3,6 @@ module pte_perm_check
 #(
 ) (
     // input
-    input  csr_mstatus_t ptw_status_i,
     input  tlb_entry_t   tlb_entry_i,
     input  logic         sv_priv_lvl_i,
     input  logic         is_store_i,
@@ -14,8 +13,11 @@ module pte_perm_check
     output logic         exec_ok_o
 );
 
-    `UNUSED_VAR (ptw_status_i)
     `UNUSED_VAR (tlb_entry_i)
+
+    logic core_sum, core_mxr;
+    assign core_sum = 1;
+    assign core_mxr = 1;
 
     // Store to an entry that is NOT dirty (Need to update the PT)
     always_comb begin
@@ -35,16 +37,16 @@ module pte_perm_check
     // Read Permission Check
     always_comb begin
         if (sv_priv_lvl_i) begin
-            if (ptw_status_i.sum) begin
+            if (core_sum) begin
                 // if SUM bit is set, in SV we can read in readable user pages
-                if (ptw_status_i.mxr) begin
+                if (core_mxr) begin
                     // if MXR bit is set, executable pages can be also readed
                     read_ok_o = tlb_entry_i.perms.sr | tlb_entry_i.perms.ur | tlb_entry_i.perms.sx | tlb_entry_i.perms.ux;
                 end else begin
                     read_ok_o = tlb_entry_i.perms.sr | tlb_entry_i.perms.ur;
                 end
             end else begin
-                if (ptw_status_i.mxr) begin
+                if (core_mxr) begin
                     // if MXR bit is set, executable pages can be also readed
                     read_ok_o = tlb_entry_i.perms.sr | tlb_entry_i.perms.sx;
                 end else begin
@@ -52,7 +54,7 @@ module pte_perm_check
                 end
             end
         end else begin  // User mode
-            if (ptw_status_i.mxr) begin  // if MXR bit is set, executable pages can be also readed
+            if (core_mxr) begin  // if MXR bit is set, executable pages can be also readed
                 read_ok_o = tlb_entry_i.perms.ur | tlb_entry_i.perms.ux;
             end else begin
                 read_ok_o = tlb_entry_i.perms.ur;
@@ -63,7 +65,7 @@ module pte_perm_check
     // Write Permission Check
     always_comb begin
         if (sv_priv_lvl_i) begin
-            if (ptw_status_i.sum) begin // if SUM bit is set, in SV we can write in writable user pages
+            if (core_sum) begin // if SUM bit is set, in SV we can write in writable user pages
                 write_ok_o = tlb_entry_i.perms.sw | tlb_entry_i.perms.uw;
             end else begin
                 write_ok_o = tlb_entry_i.perms.sw;

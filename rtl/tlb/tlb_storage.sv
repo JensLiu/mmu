@@ -1,16 +1,16 @@
 /*
  * Copyright 2023 BSC*
  * *Barcelona Supercomputing Center (BSC)
- * 
+ *
  * SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
- * 
+ *
  * Licensed under the Solderpad Hardware License v 2.1 (the “License”); you
  * may not use this file except in compliance with the License, or, at your
  * option, the Apache License version 2.0. You may obtain a copy of the
  * License at
- * 
+ *
  * https://solderpad.org/licenses/SHL-2.1/
- * 
+ *
  * Unless required by applicable law or agreed to in writing, any work
  * distributed under the License is distributed on an “AS IS” BASIS, WITHOUT
  * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
@@ -40,11 +40,6 @@ module tlb_storage
     function [TLB_IDX_SIZE-1:0] trunc_tlb_idx_size(input [31:0] val_in);
         trunc_tlb_idx_size = val_in[TLB_IDX_SIZE-1:0];
     endfunction
-
-    function [TLB_IDX_SIZE-1:0] trunc_tlb_idx_size_4in(input [3:0] val_in);
-        trunc_tlb_idx_size_4in = val_in[TLB_IDX_SIZE-1:0];
-    endfunction
-
 
     // -------------------------------------------------------------------------
     // Parallel CAM hit logic

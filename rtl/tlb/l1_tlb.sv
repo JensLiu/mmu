@@ -101,7 +101,6 @@ module l1_tlb
     for (genvar port = 0; port < NUM_TLB_PORTS; ++port) begin : g_hit_logic
         logic store_hit, read_ok, write_ok, exec_ok;
         pte_perm_check pte_perm_check_it (
-            .ptw_status_i (l2_l1_comm_q.ptw_status),
             .tlb_entry_i  (hit_entry_per_port[port]),
             .sv_priv_lvl_i(core_tlb_comms_i[port].priv_lvl != '0),
             .is_store_i   (core_tlb_comms_i[port].req.store),
@@ -136,7 +135,7 @@ module l1_tlb
             ) ? 1'b1 : 1'b0;
         // Load
         assign xcpt_lds[port] = (vm_enable && ((tlb_hit_per_port[port] && !read_ok)
-                || entry_no_access_bit)
+                ||entry_no_access_bit)
             ) ? 1'b1 : 1'b0;
 
     end
@@ -231,6 +230,7 @@ module l1_tlb
     always_comb begin
         // Problematic when always asserting the valid flag
         l1_l2_comm_o.req.valid = req_inflight;
+        l1_l2_comm_o.req.store_hit = store_hit_per_port[miss_port];
         l1_l2_comm_o.req.vpn   = core_tlb_comms_i[miss_port].req.vpn[VPN_SIZE-1:0];
         l1_l2_comm_o.req.asid  = core_tlb_comms_i[miss_port].req.asid;
         l1_l2_comm_o.req.prv   = core_tlb_comms_i[miss_port].priv_lvl;
@@ -243,21 +243,15 @@ module l1_tlb
     assign tlb_storage_if.update_req.write_idx = eviction_idx;
     assign tlb_storage_if.update_req.write_entry.vpn = core_tlb_comms_i[miss_port].req.vpn[VPN_SIZE-1:0];
     assign tlb_storage_if.update_req.write_entry.asid = core_tlb_comms_i[miss_port].req.asid;
-    assign tlb_storage_if.update_req.write_entry.ppn = l2_l1_comm_q.resp.pte.ppn;
-    assign tlb_storage_if.update_req.write_entry.level = l2_l1_comm_q.resp.level;
-    assign tlb_storage_if.update_req.write_entry.dirty = l2_l1_comm_q.resp.pte.d;
-    assign tlb_storage_if.update_req.write_entry.access = l2_l1_comm_q.resp.pte.a;
-    assign tlb_storage_if.update_req.write_entry.perms.ur = l2_l1_comm_q.resp.pte.r & l2_l1_comm_q.resp.pte.u & l2_l1_comm_q.resp.pte.v;
-    assign tlb_storage_if.update_req.write_entry.perms.uw = l2_l1_comm_q.resp.pte.w & l2_l1_comm_q.resp.pte.u & l2_l1_comm_q.resp.pte.v;
-    assign tlb_storage_if.update_req.write_entry.perms.ux = l2_l1_comm_q.resp.pte.x & l2_l1_comm_q.resp.pte.u & l2_l1_comm_q.resp.pte.v;
-    assign tlb_storage_if.update_req.write_entry.perms.sr = l2_l1_comm_q.resp.pte.r & !l2_l1_comm_q.resp.pte.u & l2_l1_comm_q.resp.pte.v;
-    assign tlb_storage_if.update_req.write_entry.perms.sw = l2_l1_comm_q.resp.pte.w & !l2_l1_comm_q.resp.pte.u & l2_l1_comm_q.resp.pte.v;
-    assign tlb_storage_if.update_req.write_entry.perms.sx = l2_l1_comm_q.resp.pte.x & !l2_l1_comm_q.resp.pte.u & l2_l1_comm_q.resp.pte.v;
+    assign tlb_storage_if.update_req.write_entry.ppn = l2_l1_comm_q.resp.tlb_entry.ppn;
+    assign tlb_storage_if.update_req.write_entry.level = l2_l1_comm_q.resp.tlb_entry.level;
+    assign tlb_storage_if.update_req.write_entry.dirty = l2_l1_comm_q.resp.tlb_entry.dirty;
+    assign tlb_storage_if.update_req.write_entry.access = l2_l1_comm_q.resp.tlb_entry.access;
+    assign tlb_storage_if.update_req.write_entry.perms = l2_l1_comm_q.resp.tlb_entry.perms;
     assign tlb_storage_if.update_req.write_entry.valid = !l2_l1_comm_q.resp.error;
     assign tlb_storage_if.update_req.write_entry.nempty = 1'b1;
     assign tlb_storage_if.clear_req.clear_tlb = clear_tlb;
     assign tlb_storage_if.clear_req.clear_mask = clear_mask;
-
 
     // ----------------------------------------------------------
     // PPN ASSIGNMENT

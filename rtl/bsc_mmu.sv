@@ -21,7 +21,7 @@
 `IGNORE_WARNINGS_BEGIN
 
 module bsc_mmu
-  import mmu_pkg::*;
+    import mmu_pkg::*;
 #(
     parameter int unsigned XLEN               = 32,
     parameter int unsigned NUM_CORES          = 1,
@@ -48,90 +48,98 @@ module bsc_mmu
     input  dmem_ptw_comm_t dmem_ptw_comm_i
 );
 
-  tlb_ptw_comm_t i_l1_l2_comm_per_core[NUM_CORES];
-  ptw_tlb_comm_t i_l2_l1_comm_per_core[NUM_CORES];
-  tlb_ptw_comm_t d_l1_l2_comm_per_core[NUM_CORES];
-  ptw_tlb_comm_t d_l2_l1_comm_per_core[NUM_CORES];
+    l1_l2_comm_t i_l1_l2_comm_per_core[NUM_CORES];
+    l2_l1_comm_t i_l2_l1_comm_per_core[NUM_CORES];
+    l1_l2_comm_t d_l1_l2_comm_per_core[NUM_CORES];
+    l2_l1_comm_t d_l2_l1_comm_per_core[NUM_CORES];
 
-  `UNUSED_VAR(L2_TLB_ENTRIES)
+    `UNUSED_VAR(L2_TLB_ENTRIES)
 
-  // L1 TLBs
-  for (genvar i = 0; i < NUM_CORES; ++i) begin : g_itlb
-    l1_tlb #(
-        .NUM_TLB_PORTS(1),
-        .TLB_ENTRIES  (L1_TLB_ENTRIES)
-    ) l1_itlb_inst (
-        .clk_i           (clk_i),
-        .rstn_i          (rstn_i),
-        .core_tlb_comms_i(core_itlb_comm_i[i+:1]),
-        .tlb_core_comms_o(itlb_core_comm_o[i+:1]),
-        .l2_l1_comm_i    (i_l2_l1_comm_per_core[i]),
-        .l1_l2_comm_o    (i_l1_l2_comm_per_core[i])
+    // L1 TLBs
+    for (genvar i = 0; i < NUM_CORES; ++i) begin : g_itlb
+        l1_tlb #(
+            .NUM_TLB_PORTS(1),
+            .TLB_ENTRIES  (L1_TLB_ENTRIES)
+        ) l1_itlb_inst (
+            .clk_i           (clk_i),
+            .rstn_i          (rstn_i),
+            .core_tlb_comms_i(core_itlb_comm_i[i+:1]),
+            .tlb_core_comms_o(itlb_core_comm_o[i+:1]),
+            .l2_l1_comm_i    (i_l2_l1_comm_per_core[i]),
+            .l1_l2_comm_o    (i_l1_l2_comm_per_core[i])
+        );
+
+        l1_tlb #(
+            .NUM_TLB_PORTS(NUM_DTLBS_PER_CORE),
+            .TLB_ENTRIES  (L1_TLB_ENTRIES)
+        ) l1_dtlb_inst (
+            .clk_i           (clk_i),
+            .rstn_i          (rstn_i),
+            .core_tlb_comms_i(core_dtlb_comm_i[i*NUM_DTLBS_PER_CORE+:NUM_DTLBS_PER_CORE]),
+            .tlb_core_comms_o(dtlb_core_comm_o[i*NUM_DTLBS_PER_CORE+:NUM_DTLBS_PER_CORE]),
+            .l2_l1_comm_i    (d_l2_l1_comm_per_core[i]),
+            .l1_l2_comm_o    (d_l1_l2_comm_per_core[i])
+        );
+    end
+
+    l1_l2_comm_t l1_l2_comm_per_core[2 * NUM_CORES];
+    l2_l1_comm_t l2_l1_comm_per_core[2 * NUM_CORES];
+
+    for (genvar i = 0; i < NUM_CORES; ++i) begin : g_tlb_merge
+        assign l1_l2_comm_per_core[i*2]   = i_l1_l2_comm_per_core[i];
+        assign l1_l2_comm_per_core[i*2+1] = d_l1_l2_comm_per_core[i];
+        assign i_l2_l1_comm_per_core[i]   = l2_l1_comm_per_core[i*2];
+        assign d_l2_l1_comm_per_core[i]   = l2_l1_comm_per_core[i*2+1];
+    end
+
+    l2_ptw_comm_t l2_ptw_comm;
+    ptw_l2_comm_t ptw_l2_comm;
+
+    l2_tlb #(
+        .NUM_TLB_PORTS(2 * NUM_CORES),
+        .TLB_ENTRIES  (1024)
+    ) l2_tlb_inst (
+        .clk_i        (clk_i),
+        .rstn_i       (rstn_i),
+        .l1_l2_comms_i(l1_l2_comm_per_core),
+        .l2_l1_comms_o(l2_l1_comm_per_core),
+        .l2_ptw_comm_o(l2_ptw_comm),
+        .ptw_l2_comm_i(ptw_l2_comm)
     );
 
-    l1_tlb #(
-        .NUM_TLB_PORTS(NUM_DTLBS_PER_CORE),
-        .TLB_ENTRIES  (L1_TLB_ENTRIES)
-    ) l1_dtlb_inst (
-        .clk_i           (clk_i),
-        .rstn_i          (rstn_i),
-        .core_tlb_comms_i(core_dtlb_comm_i[i*NUM_DTLBS_PER_CORE+:NUM_DTLBS_PER_CORE]),
-        .tlb_core_comms_o(dtlb_core_comm_o[i*NUM_DTLBS_PER_CORE+:NUM_DTLBS_PER_CORE]),
-        .l2_l1_comm_i    (d_l2_l1_comm_per_core[i]),
-        .l1_l2_comm_o    (d_l1_l2_comm_per_core[i])
+    // l1_tlb_serialiser #(
+    //     .NUM_TLB_PORTS(NUM_CORES * 2)
+    // ) itlb_ptw_serialiser (
+    //     .clk_i        (clk_i),
+    //     .rstn_i       (rstn_i),
+    //     .l1_l2_comms_i(l1_l2_comm_per_core),
+    //     .l2_l1_comms_o(l2_l1_comm_per_core),
+    //     .l2_ptw_comm_o(l2_ptw_comm),
+    //     .ptw_l2_comm_i(ptw_l2_comm)
+    // );
+
+
+    ptw #(
+        .XLEN(XLEN)
+    ) ptw_inst (
+        .clk_i          (clk_i),
+        .rstn_i         (rstn_i),
+        .itlb_ptw_comm_i(l2_ptw_comm),
+        .ptw_itlb_comm_o(ptw_l2_comm),
+        `UNUSED_PIN(dtlb_ptw_comm_i),
+        `UNUSED_PIN(ptw_dtlb_comm_o),
+
+        // dmem request-response
+        .dmem_ptw_comm_i(dmem_ptw_comm_i),
+        .ptw_dmem_comm_o(ptw_dmem_comm_o),
+
+        // csr interface
+        .csr_ptw_comm_i(csr_ptw_comm_i),
+
+        // pmu interface
+        `UNUSED_PIN(pmu_ptw_hit_o),
+        `UNUSED_PIN(pmu_ptw_miss_o)
     );
-  end
-
-  // TODO: Temporary solution
-  l2_ptw_comm_t i_l2_ptw_comm, d_l2_ptw_comm;
-  ptw_l2_comm_t i_ptw_l2_comm, d_ptw_l2_comm;
-  l1_tlb_serialiser #(
-      .NUM_TLB_PORTS(NUM_CORES)  // one port per l1 tlb
-  ) itlb_ptw_serialiser (
-      .clk_i        (clk_i),
-      .rstn_i       (rstn_i),
-      .l1_l2_comms_i(i_l1_l2_comm_per_core),
-      .l2_l1_comms_o(i_l2_l1_comm_per_core),
-      .l2_ptw_comm_o(i_l2_ptw_comm),
-      .ptw_l2_comm_i(i_ptw_l2_comm)
-  );
-
-  l1_tlb_serialiser #(
-      .NUM_TLB_PORTS(NUM_CORES)  // one port per l1 tlb
-  ) dtlb_ptw_serialiser (
-      .clk_i        (clk_i),
-      .rstn_i       (rstn_i),
-      .l1_l2_comms_i(d_l1_l2_comm_per_core),
-      .l2_l1_comms_o(d_l2_l1_comm_per_core),
-      .l2_ptw_comm_o(d_l2_ptw_comm),
-      .ptw_l2_comm_i(d_ptw_l2_comm)
-  );
-
-  ptw #(
-      .XLEN(XLEN)
-  ) ptw_inst (
-      .clk_i (clk_i),
-      .rstn_i(rstn_i),
-
-      // iTLB request-response
-      .itlb_ptw_comm_i(i_l2_ptw_comm),
-      .ptw_itlb_comm_o(i_ptw_l2_comm),
-
-      // dTLB request-response
-      .dtlb_ptw_comm_i(d_l2_ptw_comm),
-      .ptw_dtlb_comm_o(d_ptw_l2_comm),
-
-      // dmem request-response
-      .dmem_ptw_comm_i(dmem_ptw_comm_i),
-      .ptw_dmem_comm_o(ptw_dmem_comm_o),
-
-      // csr interface
-      .csr_ptw_comm_i(csr_ptw_comm_i),
-
-      // pmu interface
-      `UNUSED_PIN(pmu_ptw_hit_o),
-      `UNUSED_PIN(pmu_ptw_miss_o)
-  );
 
 endmodule
 
