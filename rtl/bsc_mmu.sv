@@ -26,8 +26,8 @@ module bsc_mmu
     parameter int unsigned XLEN               = 32,
     parameter int unsigned NUM_CORES          = 1,
     parameter int unsigned NUM_DTLBS_PER_CORE = 1,
-    parameter int unsigned L1_TLB_ENTRIES     = 8,
-    parameter int unsigned L2_TLB_ENTRIES     = 16
+    parameter int unsigned L1_TLB_ENTRIES     = 16,
+    parameter int unsigned L2_TLB_ENTRIES     = 32
 ) (
     input logic clk_i,
     input logic rstn_i,
@@ -69,6 +69,9 @@ module bsc_mmu
             .l1_l2_comm_o    (i_l1_l2_comm_per_core[i])
         );
 
+        // TODO: coalesce core requests:
+        //       expensive to fit `NUM_DTLBS_PER_CORE` CAM in real GPU configuration.
+        //       NVIDIA has 32 threads per warp.
         l1_tlb #(
             .NUM_TLB_PORTS(NUM_DTLBS_PER_CORE),
             .TLB_ENTRIES  (L1_TLB_ENTRIES)
@@ -95,6 +98,10 @@ module bsc_mmu
     l2_ptw_comm_t l2_ptw_comm;
     ptw_l2_comm_t ptw_l2_comm;
 
+    // TODO: Batch L1 Miss Lookups:
+    //       CANNOT use `NUM_CORES` CAMs, NVIDIA Blackwell has 192 SMs
+    //       A parallel 192 lookup (even with set-associative) is expensive
+    // TODO: Make the shared L2 TLB set-associative (128 sets, 8 way)
     l2_tlb #(
         .NUM_TLB_PORTS(2 * NUM_CORES),
         .TLB_ENTRIES  (1024)
@@ -107,18 +114,8 @@ module bsc_mmu
         .ptw_l2_comm_i(ptw_l2_comm)
     );
 
-    // l1_tlb_serialiser #(
-    //     .NUM_TLB_PORTS(NUM_CORES * 2)
-    // ) itlb_ptw_serialiser (
-    //     .clk_i        (clk_i),
-    //     .rstn_i       (rstn_i),
-    //     .l1_l2_comms_i(l1_l2_comm_per_core),
-    //     .l2_l1_comms_o(l2_l1_comm_per_core),
-    //     .l2_ptw_comm_o(l2_ptw_comm),
-    //     .ptw_l2_comm_i(ptw_l2_comm)
-    // );
 
-
+    // TODO: Multiple PTWs per Socket.
     ptw #(
         .XLEN(XLEN)
     ) ptw_inst (

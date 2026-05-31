@@ -185,7 +185,7 @@ module l1_tlb
         clear_mask = '0;
         if (l2_l1_comm_q.invalidate_tlb) begin
             clear_tlb  = 1'b1;
-            clear_mask = 'hFF;
+            clear_mask = {TLB_ENTRIES{1'b1}};
         end else if (clear_tlb_req) begin
             clear_tlb           = 1'b1;
             // Flush cam hit in a non-dirty page when store arrives
