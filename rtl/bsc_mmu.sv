@@ -84,34 +84,42 @@ module bsc_mmu
         );
     end
 
-    l1_l2_comm_t l1_l2_comm_per_core[2 * NUM_CORES];
-    l2_l1_comm_t l2_l1_comm_per_core[2 * NUM_CORES];
-
-    for (genvar i = 0; i < NUM_CORES; ++i) begin : g_tlb_merge
-        assign l1_l2_comm_per_core[i*2]   = i_l1_l2_comm_per_core[i];
-        assign l1_l2_comm_per_core[i*2+1] = d_l1_l2_comm_per_core[i];
-        assign i_l2_l1_comm_per_core[i]   = l2_l1_comm_per_core[i*2];
-        assign d_l2_l1_comm_per_core[i]   = l2_l1_comm_per_core[i*2+1];
-    end
-
     l2_ptw_comm_t l2_ptw_comm;
     ptw_l2_comm_t ptw_l2_comm;
 
-    // Unified L2 TLB, only request on L1 TLB miss: In the same cycle, NOT ALL L1 TLBs are in miss,
-    // if so, the bottleneck is on the PTW
-    // Set-Associative
-    // TODO: L1 Miss Batching, Banking etc:
-    //       CANNOT use `NUM_CORES` CAMs, NVIDIA Blackwell has 192 SMs
-    //       A parallel 192 lookup (even with set-associative) is expensive
-    // TODO: Make the shared L2 TLB set-associative (128 sets, 8 way)
-    l2_tlb #(
-        .NUM_TLB_PORTS(2 * NUM_CORES),
-        .TLB_ENTRIES  (L2_TLB_ENTRIES)
-    ) l2_tlb_inst (
+    // L1 <-> L2 fire-once links (interleaved: [i*2] = iTLB, [i*2+1] = dTLB).
+    // Each L1 keeps its held-valid struct interface; an adapter bridges it to
+    // the fire-once handshake the decoupled L2 frontend expects.
+    l1_l2_if l1_l2_links[2 * NUM_CORES] ();
+
+    for (genvar i = 0; i < NUM_CORES; ++i) begin : g_l1_l2_adapters
+        l1_l2_adapter itlb_adapter (
+            .clk_i       (clk_i),
+            .rstn_i      (rstn_i),
+            .l1_l2_comm_i(i_l1_l2_comm_per_core[i]),
+            .l2_l1_comm_o(i_l2_l1_comm_per_core[i]),
+            .ifc         (l1_l2_links[i*2])
+        );
+        l1_l2_adapter dtlb_adapter (
+            .clk_i       (clk_i),
+            .rstn_i      (rstn_i),
+            .l1_l2_comm_i(d_l1_l2_comm_per_core[i]),
+            .l2_l1_comm_o(d_l2_l1_comm_per_core[i]),
+            .ifc         (l1_l2_links[i*2+1])
+        );
+    end
+
+    // Decoupled shared L2 TLB: request scatter -> single bank (PTE cache) ->
+    // response gather. NUM_BANKS = 1 today; bump it to bank by VPN.
+    // The bank's CAM is single-ported - no NUM_CORES-wide parallel lookup.
+    l2_tlb_frontend #(
+        .NUM_REQS   (2 * NUM_CORES),
+        .NUM_BANKS  (1),
+        .TLB_ENTRIES(L2_TLB_ENTRIES)
+    ) l2_tlb_frontend_inst (
         .clk_i        (clk_i),
         .rstn_i       (rstn_i),
-        .l1_l2_comms_i(l1_l2_comm_per_core),
-        .l2_l1_comms_o(l2_l1_comm_per_core),
+        .l1_l2_if     (l1_l2_links),
         .l2_ptw_comm_o(l2_ptw_comm),
         .ptw_l2_comm_i(ptw_l2_comm)
     );

@@ -33,9 +33,7 @@ module l1_tlb
     input  core_tlb_comm_t core_tlb_comms_i[NUM_TLB_PORTS],  // Communication from translation requester to L1 TLB.
     output tlb_core_comm_t tlb_core_comms_o[NUM_TLB_PORTS],  // Communication from L1 TLB to translation requester.
 
-    // PTW request-response
-    input  l2_l1_comm_t l2_l1_comm_i,  // Communication from L1 TLB to PTW/L2 TLB.
-    output l1_l2_comm_t l1_l2_comm_o   // Communication from PTW/L2 TLB to L1 TLB.
+    l1_l2_if.master l1_l2_if
 );
 
     localparam int unsigned TLB_IDX_SIZE = $clog2(TLB_ENTRIES);
@@ -211,7 +209,7 @@ module l1_tlb
         .req_valid_i     (core_tlb_comms_i[port_idx].req.valid),
         .tlb_miss_i      (tlb_miss),
         .invalidate_tlb_i(l2_l1_comm_q.invalidate_tlb),
-        .rsp_valid_i     (l2_l1_comm_q.resp_valid),
+        .rsp_valid_i     (l2_l1_comm_q.resp.valid),
         // Output Flags
         .req_inflight_o  (req_inflight),
         .req_finished_o  (req_finished),
@@ -239,13 +237,13 @@ module l1_tlb
     // L1-L2 TLB send request
     always_comb begin
         // Problematic when always asserting the valid flag
-        l1_l2_comm_o.valid = req_inflight;
+        l1_l2_comm_o.req.valid     = req_inflight;
         l1_l2_comm_o.req.store_hit = store_hit_per_port[port_idx];
-        l1_l2_comm_o.req.vpn   = core_tlb_comms_i[port_idx].req.vpn[VPN_SIZE-1:0];
-        l1_l2_comm_o.req.asid  = core_tlb_comms_i[port_idx].req.asid;
-        l1_l2_comm_o.req.prv   = core_tlb_comms_i[port_idx].priv_lvl;
-        l1_l2_comm_o.req.store = core_tlb_comms_i[port_idx].req.store;
-        l1_l2_comm_o.req.fetch = core_tlb_comms_i[port_idx].req.instruction;
+        l1_l2_comm_o.req.vpn       = core_tlb_comms_i[port_idx].req.vpn[VPN_SIZE-1:0];
+        l1_l2_comm_o.req.asid      = core_tlb_comms_i[port_idx].req.asid;
+        l1_l2_comm_o.req.prv       = core_tlb_comms_i[port_idx].priv_lvl;
+        l1_l2_comm_o.req.store     = core_tlb_comms_i[port_idx].req.store;
+        l1_l2_comm_o.req.fetch     = core_tlb_comms_i[port_idx].req.instruction;
     end
 
     // TLB Storage communication
