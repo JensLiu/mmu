@@ -131,10 +131,9 @@ module bsc_mmu
     ) ptw_inst (
         .clk_i          (clk_i),
         .rstn_i         (rstn_i),
+
         .itlb_ptw_comm_i(l2_ptw_comm),
         .ptw_itlb_comm_o(ptw_l2_comm),
-        `UNUSED_PIN(dtlb_ptw_comm_i),
-        `UNUSED_PIN(ptw_dtlb_comm_o),
 
         // dmem request-response
         .dmem_ptw_comm_i(dmem_ptw_comm_i),

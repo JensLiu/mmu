@@ -32,10 +32,6 @@ module ptw
     input  tlb_ptw_comm_t itlb_ptw_comm_i,
     output ptw_tlb_comm_t ptw_itlb_comm_o,
 
-    // dTLB request-response
-    input  tlb_ptw_comm_t dtlb_ptw_comm_i,
-    output ptw_tlb_comm_t ptw_dtlb_comm_o,
-
     // dmem request-response
     input  dmem_ptw_comm_t dmem_ptw_comm_i,
     output ptw_dmem_comm_t ptw_dmem_comm_o,
@@ -101,17 +97,8 @@ module ptw
     trunc_ptw_cache_size = val_in[$clog2(PTW_CACHE_SIZE)-1:0];
   endfunction
 
-  // PTW Arbiter
-  ptw_arb ptw_arb_inst (
-      .clk_i          (clk_i),
-      .rstn_i         (rstn_i),
-      .itlb_ptw_comm_i(itlb_ptw_comm_i),
-      .dtlb_ptw_comm_i(dtlb_ptw_comm_i),
-      .ptw_itlb_comm_o(ptw_itlb_comm_o),
-      .ptw_dtlb_comm_o(ptw_dtlb_comm_o),
-      .ptw_tlb_comm_i (ptw_tlb_comm),
-      .tlb_ptw_comm_o (tlb_ptw_comm)
-  );
+  assign tlb_ptw_comm = itlb_ptw_comm_i;
+  assign ptw_itlb_comm_o = ptw_tlb_comm;
 
   // VPN indexation depending on the page level
   genvar lvl;
