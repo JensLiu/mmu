@@ -138,15 +138,24 @@ module l2_tlb
     // We can grant the next miss when the FSM has finished processing the current miss;
     assign miss_grant_next = req_finished;
 
+    // Clamp miss_port to a valid index. The serialiser guarantees
+    // miss_port < NUM_TLB_PORTS during operation, but for the single-port case
+    // miss_port is a 1-bit register that Verilator's --x-initial unique can
+    // initialise to 1, causing an out-of-bounds access (segfault) before the
+    // synchronous reset takes effect.
+    localparam int unsigned TLB_PORT_IDX_W = (NUM_TLB_PORTS > 1) ? $clog2(NUM_TLB_PORTS) : 1;
+    logic [TLB_PORT_IDX_W-1:0] port_idx;
+    assign port_idx = (NUM_TLB_PORTS == 1) ? '0 : miss_port;
+
     logic tlb_hit, tlb_miss, store_hit, vm_enable, passthrough, hit_cam;
     tlb_entry_t                    hit_entry;
     logic       [TLB_IDX_SIZE-1:0] hit_idx;
-    assign hit_entry   = tlb_hit_per_port[miss_port] ? hit_entry_per_port[miss_port] : '0;
-    assign tlb_hit     = tlb_hit_per_port[miss_port];
-    assign tlb_miss    = tlb_miss_per_port[miss_port];
-    assign hit_idx     = hit_idx_per_port[miss_port];
-    assign store_hit   = store_hit_per_port[miss_port];
-    assign hit_cam     = hit_cam_per_port[miss_port];
+    assign hit_entry   = tlb_hit_per_port[port_idx] ? hit_entry_per_port[port_idx] : '0;
+    assign tlb_hit     = tlb_hit_per_port[port_idx];
+    assign tlb_miss    = tlb_miss_per_port[port_idx];
+    assign hit_idx     = hit_idx_per_port[port_idx];
+    assign store_hit   = store_hit_per_port[port_idx];
+    assign hit_cam     = hit_cam_per_port[port_idx];
 
     // Flush
     logic [TLB_ENTRIES-1:0] clear_mask;
@@ -170,7 +179,7 @@ module l2_tlb
         .clk_i           (clk_i),
         .rstn_i          (rstn_i),
         // Input Flags
-        .req_valid_i     (l1_l2_comms_i[miss_port].req.valid),
+        .req_valid_i     (l1_l2_comms_i[port_idx].req.valid),
         .tlb_miss_i      (tlb_miss),
         .invalidate_tlb_i(ptw_l2_comm_q.invalidate_tlb),
         .rsp_valid_i     (ptw_l2_comm_q.resp.valid),
@@ -184,12 +193,13 @@ module l2_tlb
     // Eviction / Victim Selection
     logic unsigned [TLB_IDX_SIZE-1:0] eviction_idx;
     eviction_policy #(
-        .NUM_ENTRIES(TLB_ENTRIES)
+        .NUM_ENTRIES(TLB_ENTRIES),
+        .NUM_HIT_PORTS(NUM_TLB_PORTS)
     ) eviction_policy (
         .clk_i                  (clk_i),
         .rstn_i                 (rstn_i),
-        .access_hit_i           (hit_cam),
-        .access_idx_i           (hit_idx),
+        .access_hit_i           (hit_cam_per_port),
+        .access_idx_i           (hit_idx_per_port),
         .write_event_i          (write_tlb),
         .write_idx_i            (eviction_idx),
         .tlb_has_invalid_entry_i(tlb_storage_if.tlb_has_invalid_entry),
@@ -201,18 +211,18 @@ module l2_tlb
     always_comb begin
         // Problematic when always asserting the valid flag
         l2_ptw_comm_o.req.valid = req_inflight;
-        l2_ptw_comm_o.req.vpn   = l1_l2_comms_i[miss_port].req.vpn[VPN_SIZE-1:0];
-        l2_ptw_comm_o.req.asid  = l1_l2_comms_i[miss_port].req.asid;
-        l2_ptw_comm_o.req.prv   = l1_l2_comms_i[miss_port].req.prv;
-        l2_ptw_comm_o.req.store = l1_l2_comms_i[miss_port].req.store;
-        l2_ptw_comm_o.req.fetch = l1_l2_comms_i[miss_port].req.fetch;
+        l2_ptw_comm_o.req.vpn   = l1_l2_comms_i[port_idx].req.vpn[VPN_SIZE-1:0];
+        l2_ptw_comm_o.req.asid  = l1_l2_comms_i[port_idx].req.asid;
+        l2_ptw_comm_o.req.prv   = l1_l2_comms_i[port_idx].req.prv;
+        l2_ptw_comm_o.req.store = l1_l2_comms_i[port_idx].req.store;
+        l2_ptw_comm_o.req.fetch = l1_l2_comms_i[port_idx].req.fetch;
     end
 
     // TLB Storage communication
     assign tlb_storage_if.update_req.write_tlb = write_tlb;
     assign tlb_storage_if.update_req.write_idx = eviction_idx;
-    assign tlb_storage_if.update_req.write_entry.vpn = l1_l2_comms_i[miss_port].req.vpn[VPN_SIZE-1:0];
-    assign tlb_storage_if.update_req.write_entry.asid = l1_l2_comms_i[miss_port].req.asid;
+    assign tlb_storage_if.update_req.write_entry.vpn = l1_l2_comms_i[port_idx].req.vpn[VPN_SIZE-1:0];
+    assign tlb_storage_if.update_req.write_entry.asid = l1_l2_comms_i[port_idx].req.asid;
     assign tlb_storage_if.update_req.write_entry.ppn = ptw_l2_comm_q.resp.pte.ppn;
     assign tlb_storage_if.update_req.write_entry.level = ptw_l2_comm_q.resp.level;
     assign tlb_storage_if.update_req.write_entry.dirty = ptw_l2_comm_q.resp.pte.d;

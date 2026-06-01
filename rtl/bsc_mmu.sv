@@ -53,9 +53,8 @@ module bsc_mmu
     l1_l2_comm_t d_l1_l2_comm_per_core[NUM_CORES];
     l2_l1_comm_t d_l2_l1_comm_per_core[NUM_CORES];
 
-    `UNUSED_VAR(L2_TLB_ENTRIES)
-
     // L1 TLBs
+    // Fully-associative, small size, multiport CAM could be feasible
     for (genvar i = 0; i < NUM_CORES; ++i) begin : g_itlb
         l1_tlb #(
             .NUM_TLB_PORTS(1),
@@ -98,13 +97,16 @@ module bsc_mmu
     l2_ptw_comm_t l2_ptw_comm;
     ptw_l2_comm_t ptw_l2_comm;
 
-    // TODO: Batch L1 Miss Lookups:
+    // Unified L2 TLB, only request on L1 TLB miss: In the same cycle, NOT ALL L1 TLBs are in miss,
+    // if so, the bottleneck is on the PTW
+    // Set-Associative
+    // TODO: L1 Miss Batching, Banking etc:
     //       CANNOT use `NUM_CORES` CAMs, NVIDIA Blackwell has 192 SMs
     //       A parallel 192 lookup (even with set-associative) is expensive
     // TODO: Make the shared L2 TLB set-associative (128 sets, 8 way)
     l2_tlb #(
         .NUM_TLB_PORTS(2 * NUM_CORES),
-        .TLB_ENTRIES  (1024)
+        .TLB_ENTRIES  (L2_TLB_ENTRIES)
     ) l2_tlb_inst (
         .clk_i        (clk_i),
         .rstn_i       (rstn_i),
