@@ -84,9 +84,11 @@ module bsc_mmu
         );
     end
 
-    // Unified ready/valid PTW link, shared between the L2 frontend (tlb side)
-    // and the PTW (ptw side).
-    l2_ptw_if ptw_link ();
+    // Unified ready/valid PTW links, shared between the L2 frontend (tlb side)
+    // and the PTW pool (ptw side).  NUM_PTWS>1 also needs a dmem arbiter, so it
+    // stays 1 until that is built.
+    localparam int unsigned NUM_PTWS = 1;
+    l2_ptw_if ptw_link[NUM_PTWS] ();
 
     // L1 <-> L2 fire-once links (interleaved: [i*2] = iTLB, [i*2+1] = dTLB).
     // Each L1 keeps its held-valid struct interface; an adapter bridges it to
@@ -116,6 +118,7 @@ module bsc_mmu
     l2_tlb_frontend #(
         .NUM_REQS   (2 * NUM_CORES),
         .NUM_BANKS  (1),
+        .NUM_PTWS   (NUM_PTWS),
         .TLB_ENTRIES(L2_TLB_ENTRIES)
     ) l2_tlb_frontend_inst (
         .clk_i        (clk_i),
@@ -132,18 +135,14 @@ module bsc_mmu
         .clk_i          (clk_i),
         .rstn_i         (rstn_i),
 
-        .ptw_if(ptw_link),
+        .ptw_if(ptw_link[0]),
 
         // dmem request-response
         .dmem_ptw_comm_i(dmem_ptw_comm_i),
         .ptw_dmem_comm_o(ptw_dmem_comm_o),
 
         // csr interface
-        .csr_ptw_comm_i(csr_ptw_comm_i),
-
-        // pmu interface
-        `UNUSED_PIN(pmu_ptw_hit_o),
-        `UNUSED_PIN(pmu_ptw_miss_o)
+        .csr_ptw_comm_i(csr_ptw_comm_i)
     );
 
 endmodule

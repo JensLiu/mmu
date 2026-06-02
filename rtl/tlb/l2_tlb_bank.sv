@@ -156,7 +156,7 @@ module l2_tlb_bank
         // issue
         .issue_valid_o        (ptw_if.req_valid),
         .issue_ready_i        (ptw_if.req_ready),
-        .issue_id_o           (ptw_if.req_data.tag[MSHR_TAG_W-1:0]),
+        .issue_id_o           (ptw_if.req_data.tag.slot[MSHR_TAG_W-1:0]),
         .issue_vpn_o          (ptw_if.req_data.vpn),
         .issue_asid_o         (ptw_if.req_data.asid),
         .issue_set_dirty_o    (ptw_if.req_data.store),
@@ -165,7 +165,7 @@ module l2_tlb_bank
         // fill
         .fill_valid_i         (ptw_if.rsp_valid),
         .fill_ready_o         (ptw_if.rsp_ready),
-        .fill_id_i            (MSHR_TAG_W'(ptw_if.rsp_data.tag)),
+        .fill_id_i            (MSHR_TAG_W'(ptw_if.rsp_data.tag.slot)),
         .fill_pte_i           (ptw_if.rsp_data.pte),
         .fill_level_i         (ptw_if.rsp_data.level),
         .fill_error_i         (ptw_if.rsp_data.error),
@@ -182,10 +182,12 @@ module l2_tlb_bank
         `UNUSED_PIN(pending_entries_o)
     );
 
-    // The MSHR slot id (issue_id_o) drives the low tag bits above; zero-extend
-    // the rest of the opaque PTW tag field (room for {bank,slot} later).
-    if (PTW_TAG_W > MSHR_TAG_W) begin : g_tag_hi
-        assign ptw_if.req_data.tag[PTW_TAG_W-1:MSHR_TAG_W] = '0;
+    // The bank owns only tag.slot (issue_id_o drives its low bits above).  The
+    // bank field is composed by the PTW scheduler, so tie it off here; zero the
+    // unused high slot bits if the MSHR is smaller than the slot field.
+    assign ptw_if.req_data.tag.bank = '0;
+    if (PTW_TAG_SLOT_W > MSHR_TAG_W) begin : g_slot_hi
+        assign ptw_if.req_data.tag.slot[PTW_TAG_SLOT_W-1:MSHR_TAG_W] = '0;
     end
 
     // -------------------------------------------------------------------------

@@ -249,7 +249,19 @@ package mmu_pkg;
     // Used by l2_ptw_if; the legacy *_comm_t types above are kept for the
     // (uninstantiated) legacy TLB/PTW modules.
     // ---------------------------------------------------------
-    parameter PTW_TAG_W = 8;  // opaque tag the PTW echoes (sized for max MSHR / {bank,slot})
+    // The PTW echoes this tag opaquely. It has two owners with disjoint fields:
+    //   .slot - the requesting bank's MSHR slot id (bank-private; routes the fill)
+    //   .bank - the bank id, stamped by the PTW scheduler (routes the response)
+    // Each layer touches only its own field, so neither hard-codes bit positions.
+    // Widths are design maxima (>= any bank's MSHR_TAG_W / clog2(NUM_BANKS)).
+    parameter PTW_TAG_SLOT_W = 4;  // up to 16 MSHR slots per bank
+    parameter PTW_TAG_BANK_W = 4;  // up to 16 banks
+    parameter PTW_TAG_W      = PTW_TAG_BANK_W + PTW_TAG_SLOT_W;
+
+    typedef struct packed {
+        logic [PTW_TAG_BANK_W-1:0] bank;  // owned by the scheduler
+        logic [PTW_TAG_SLOT_W-1:0] slot;  // owned by the bank's MSHR
+    } ptw_tag_t;
 
     typedef struct packed {
         logic [VPN_SIZE-1:0]   vpn;
@@ -257,14 +269,14 @@ package mmu_pkg;
         logic [1:0]            prv;
         logic                  store;
         logic                  fetch;
-        logic [PTW_TAG_W-1:0]  tag;
+        ptw_tag_t              tag;
     } ptw_req_data_t;
 
     typedef struct packed {
         pte_t                  pte;
         logic [LEVEL_BITS-1:0] level;
         logic                  error;
-        logic [PTW_TAG_W-1:0]  tag;
+        ptw_tag_t              tag;
     } ptw_rsp_data_t;
 
     ////////////////////////////////
