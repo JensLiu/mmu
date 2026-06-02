@@ -28,20 +28,15 @@ module ptw
     input logic clk_i,
     input logic rstn_i,
 
-    // iTLB request-response
-    input  tlb_ptw_comm_t itlb_ptw_comm_i,
-    output ptw_tlb_comm_t ptw_itlb_comm_o,
+    // TLB request-response (unified ready/valid)
+    l2_ptw_if.ptw ptw_if,
 
     // dmem request-response
     input  dmem_ptw_comm_t dmem_ptw_comm_i,
     output ptw_dmem_comm_t ptw_dmem_comm_o,
 
     // csr interface
-    input csr_ptw_comm_t csr_ptw_comm_i,
-
-    // pmu interface
-    output logic pmu_ptw_hit_o,
-    output logic pmu_ptw_miss_o
+    input csr_ptw_comm_t csr_ptw_comm_i
 );
   //Mem commands
   //localparam [4:0] M_XA_OR = 5'b01010;
@@ -61,13 +56,10 @@ module ptw
   logic unsigned [$clog2(LEVELS)-1:0] count_d, count_q;
   logic unsigned [$clog2(LEVELS):0] count;
 
-  ptw_tlb_comm_t                    ptw_tlb_comm;
-  tlb_ptw_comm_t                    tlb_ptw_comm;
-
   ptw_state current_state, next_state;
 
   logic                             ptw_ready;
-  tlb_ptw_req_t                     r_req;
+  ptw_req_data_t                    r_req;
   pte_t                             r_pte;
   pte_t                             pte;
   pte_t                             pte_wdata;
@@ -97,8 +89,6 @@ module ptw
     trunc_ptw_cache_size = val_in[$clog2(PTW_CACHE_SIZE)-1:0];
   endfunction
 
-  assign tlb_ptw_comm = itlb_ptw_comm_i;
-  assign ptw_itlb_comm_o = ptw_tlb_comm;
 
   // VPN indexation depending on the page level
   genvar lvl;
@@ -173,8 +163,8 @@ module ptw
               LEVELS - 1
           ))) begin
         r_pte.ppn <= pte_cache_data;
-      end else if (ptw_ready & tlb_ptw_comm.req.valid) begin
-        r_req     <= tlb_ptw_comm.req;
+      end else if (ptw_ready & ptw_if.req_valid) begin
+        r_req     <= ptw_if.req_data;
         r_pte.ppn <= csr_ptw_comm_i.satp[PPN_SIZE-1:0];
       end
     end
@@ -354,23 +344,23 @@ module ptw
   assign resp_ppn_lvl[LEVELS-1]      = r_resp_ppn[PPN_SIZE-1:0];
   assign resp_ppn                    = resp_ppn_lvl[count_q];
 
-  // Send TLB Response to Arb
-  assign ptw_tlb_comm.resp.valid     = resp_val;
-  assign ptw_tlb_comm.resp.error     = resp_err;
-  assign ptw_tlb_comm.resp.level     = count_q;
-  assign ptw_tlb_comm.resp.pte.ppn   = resp_ppn;
-  assign ptw_tlb_comm.resp.pte.rfs   = r_pte.rfs;
-  assign ptw_tlb_comm.resp.pte.d     = r_pte.d;
-  assign ptw_tlb_comm.resp.pte.a     = r_pte.a;
-  assign ptw_tlb_comm.resp.pte.g     = r_pte.g;
-  assign ptw_tlb_comm.resp.pte.u     = r_pte.u;
-  assign ptw_tlb_comm.resp.pte.x     = r_pte.x;
-  assign ptw_tlb_comm.resp.pte.w     = r_pte.w;
-  assign ptw_tlb_comm.resp.pte.r     = r_pte.r;
-  assign ptw_tlb_comm.resp.pte.v     = r_pte.v;
-  // assign ptw_tlb_comm.ptw_ready      = ptw_ready;
-//   assign ptw_tlb_comm.ptw_status     = csr_ptw_comm_i.mstatus;
-  assign ptw_tlb_comm.invalidate_tlb = csr_ptw_comm_i.flush;
+  // Send TLB Response (unified ready/valid; tag echoed from the latched request)
+  assign ptw_if.rsp_valid      = resp_val;
+  assign ptw_if.rsp_data.error = resp_err;
+  assign ptw_if.rsp_data.level = count_q;
+  assign ptw_if.rsp_data.pte.ppn = resp_ppn;
+  assign ptw_if.rsp_data.pte.rfs = r_pte.rfs;
+  assign ptw_if.rsp_data.pte.d   = r_pte.d;
+  assign ptw_if.rsp_data.pte.a   = r_pte.a;
+  assign ptw_if.rsp_data.pte.g   = r_pte.g;
+  assign ptw_if.rsp_data.pte.u   = r_pte.u;
+  assign ptw_if.rsp_data.pte.x   = r_pte.x;
+  assign ptw_if.rsp_data.pte.w   = r_pte.w;
+  assign ptw_if.rsp_data.pte.r   = r_pte.r;
+  assign ptw_if.rsp_data.pte.v   = r_pte.v;
+  assign ptw_if.rsp_data.tag     = r_req.tag;
+  assign ptw_if.req_ready        = ptw_ready;
+  assign ptw_if.invalidate_tlb   = csr_ptw_comm_i.flush;
 
   // Page-Table Walker FSM
   always_ff @(posedge clk_i) begin
@@ -386,21 +376,18 @@ module ptw
   always_comb begin
     count_d                   = count_q;
     count                     = count_q + 1'b1;
-    pmu_ptw_hit_o             = 1'b0;
-    pmu_ptw_miss_o            = 1'b0;
     ptw_dmem_comm_o.req.valid = 1'b0;
     next_state                = current_state;
     case (current_state)
       S_READY: begin
         count_d = '0;
-        if (tlb_ptw_comm.req.valid) next_state = S_REQ;
+        if (ptw_if.req_valid) next_state = S_REQ;
         else next_state = S_READY;
       end
       S_REQ: begin
         ptw_dmem_comm_o.req.valid = 1'b1;
         if (pte_cache_hit && (count_q < $unsigned(LEVELS - 1))) begin
           ptw_dmem_comm_o.req.valid = 1'b0;
-          pmu_ptw_hit_o             = 1'b1;
           count_d                   = count[1:0];
           next_state                = S_REQ;
         end else if (dmem_ptw_comm_i.dmem_ready) begin
@@ -417,7 +404,6 @@ module ptw
             next_state = S_ERROR;
           end else if (is_pte_table && (count_q < $unsigned(LEVELS - 1))) begin
             count_d        = count[1:0];
-            pmu_ptw_miss_o = 1'b1;
             next_state     = S_REQ;
           end else if (is_pte_leaf) begin
             next_state = S_DONE;
@@ -429,10 +415,11 @@ module ptw
         end
       end
       S_DONE: begin
-        next_state = S_READY;
+        // Hold the response until the TLB accepts it (backpressured rsp channel).
+        next_state = ptw_if.rsp_ready ? S_READY : S_DONE;
       end
       S_ERROR: begin
-        next_state = S_READY;
+        next_state = ptw_if.rsp_ready ? S_READY : S_ERROR;
       end
     endcase
   end

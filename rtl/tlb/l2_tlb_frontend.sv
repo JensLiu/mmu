@@ -31,11 +31,8 @@ module l2_tlb_frontend
     input logic rstn_i, // System reset signal (active low).
 
     // L1-L2 TLB interface (one fire-once link per L1)
-    l1_l2_if.slave l1_l2_if[NUM_REQS],
-
-    // PTW-L2 TLB interface
-    output l2_ptw_comm_t l2_ptw_comm_o,  // Communication from L2 TLB to PTW.
-    input  ptw_l2_comm_t ptw_l2_comm_i   // Communication from PTW to L2 TLB.
+    l1_l2_if.l2   l1_l2_if[NUM_REQS],
+    l2_ptw_if.tlb ptw_if
 );
 
     localparam int unsigned SRC_SEL_W = (NUM_REQS > 1) ? $clog2(NUM_REQS) : 1;
@@ -72,7 +69,7 @@ module l2_tlb_frontend
         assign src_rsp_ready[i]           = l1_l2_if[i].rsp_ready;
 
         // Broadcast flush to every L1 (not request-matched).
-        assign l1_l2_if[i].invalidate_tlb = ptw_l2_comm_i.invalidate_tlb;
+        assign l1_l2_if[i].invalidate_tlb = ptw_if.invalidate_tlb;
     end
 
     // -------------------------------------------------------------------------
@@ -106,42 +103,59 @@ module l2_tlb_frontend
     // -------------------------------------------------------------------------
     // Banks
     // -------------------------------------------------------------------------
-    logic         [NUM_BANKS-1:0]                bank_rsp_valid;
-    logic         [NUM_BANKS-1:0]                bank_rsp_ready;
-    logic         [NUM_BANKS-1:0][    RSP_W-1:0] bank_rsp_data;
-    logic         [NUM_BANKS-1:0][SRC_SEL_W-1:0] bank_rsp_src;  // threaded src id -> rsp sel_in
-    l2_ptw_comm_t [NUM_BANKS-1:0]                bank_ptw_comm;
+    logic [NUM_BANKS-1:0]                bank_rsp_valid;
+    logic [NUM_BANKS-1:0]                bank_rsp_ready;
+    logic [NUM_BANKS-1:0][    RSP_W-1:0] bank_rsp_data;
+    logic [NUM_BANKS-1:0][SRC_SEL_W-1:0] bank_rsp_src;  // threaded src id -> rsp sel_in
+
+    // Per-bank PTW links, merged onto the shared ptw_if below.
+    l2_ptw_if bank_ptw[NUM_BANKS] ();
 
     for (genvar b = 0; b < NUM_BANKS; ++b) begin : g_banks
         l2_l1_rsp_data_t bank_rsp_struct;
 
         l2_tlb_bank #(
-            .SRC_W(SRC_SEL_W)
+            .SRC_W   (SRC_SEL_W),
+            .NUM_SRCS(NUM_REQS)
         ) tlb_bank (
-            .clk_i        (clk_i),
-            .rstn_i       (rstn_i),
-            .req_valid_i  (bank_req_valid[b]),
-            .req_ready_o  (bank_req_ready[b]),
-            .req_data_i   (l1_l2_req_data_t'(bank_req_data[b])),
-            .req_src_i    (bank_src_id[b]),
-            .rsp_valid_o  (bank_rsp_valid[b]),
-            .rsp_ready_i  (bank_rsp_ready[b]),
-            .rsp_data_o   (bank_rsp_struct),
-            .rsp_src_o    (bank_rsp_src[b]),
-            .l2_ptw_comm_o(bank_ptw_comm[b]),
-            .ptw_l2_comm_i(ptw_l2_comm_i)
+            .clk_i      (clk_i),
+            .rstn_i     (rstn_i),
+            .req_valid_i(bank_req_valid[b]),
+            .req_ready_o(bank_req_ready[b]),
+            .req_data_i (l1_l2_req_data_t'(bank_req_data[b])),
+            .req_src_i  (bank_src_id[b]),
+            .rsp_valid_o(bank_rsp_valid[b]),
+            .rsp_ready_i(bank_rsp_ready[b]),
+            .rsp_data_o (bank_rsp_struct),
+            .rsp_src_o  (bank_rsp_src[b]),
+            .ptw_if     (bank_ptw[b])
         );
 
         assign bank_rsp_data[b] = bank_rsp_struct;
     end
 
-    // PTW merge. Direct wire for a single bank
-    // Replaces this with a VX_stream_arb(NUM_BANKS -> NUM_PTW_PORTS) + {bank,slot} tag routing.
+    // PTW merge. Direct wire for a single bank.
+    // TODO multi-bank: VX_stream_arb(NUM_BANKS -> NUM_PTW) on the request channel
+    // + {bank,slot} tag so each response self-routes back to its bank.
     if (NUM_BANKS == 1) begin : g_ptw_single
-        assign l2_ptw_comm_o = bank_ptw_comm[0];
+        assign ptw_if.req_valid           = bank_ptw[0].req_valid;
+        assign ptw_if.req_data            = bank_ptw[0].req_data;
+        assign ptw_if.rsp_ready           = bank_ptw[0].rsp_ready;
+        assign bank_ptw[0].req_ready      = ptw_if.req_ready;
+        assign bank_ptw[0].rsp_valid      = ptw_if.rsp_valid;
+        assign bank_ptw[0].rsp_data       = ptw_if.rsp_data;
+        assign bank_ptw[0].invalidate_tlb = ptw_if.invalidate_tlb;
     end else begin : g_ptw_multi
-        // TODO: arbitrate bank PTW requests onto the shared PTW.
-        assign l2_ptw_comm_o = bank_ptw_comm[0];  // placeholder; correct only for NUM_BANKS==1
+        // Placeholder (only bank 0 reaches the PTW); correct only for NUM_BANKS==1.
+        assign ptw_if.req_valid = bank_ptw[0].req_valid;
+        assign ptw_if.req_data  = bank_ptw[0].req_data;
+        assign ptw_if.rsp_ready = bank_ptw[0].rsp_ready;
+        for (genvar b = 0; b < NUM_BANKS; ++b) begin : g_off
+            assign bank_ptw[b].req_ready      = (b == 0) ? ptw_if.req_ready : 1'b0;
+            assign bank_ptw[b].rsp_valid      = (b == 0) ? ptw_if.rsp_valid : 1'b0;
+            assign bank_ptw[b].rsp_data       = ptw_if.rsp_data;
+            assign bank_ptw[b].invalidate_tlb = ptw_if.invalidate_tlb;
+        end
     end
 
     // -------------------------------------------------------------------------

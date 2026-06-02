@@ -84,8 +84,9 @@ module bsc_mmu
         );
     end
 
-    l2_ptw_comm_t l2_ptw_comm;
-    ptw_l2_comm_t ptw_l2_comm;
+    // Unified ready/valid PTW link, shared between the L2 frontend (tlb side)
+    // and the PTW (ptw side).
+    l2_ptw_if ptw_link ();
 
     // L1 <-> L2 fire-once links (interleaved: [i*2] = iTLB, [i*2+1] = dTLB).
     // Each L1 keeps its held-valid struct interface; an adapter bridges it to
@@ -120,8 +121,7 @@ module bsc_mmu
         .clk_i        (clk_i),
         .rstn_i       (rstn_i),
         .l1_l2_if     (l1_l2_links),
-        .l2_ptw_comm_o(l2_ptw_comm),
-        .ptw_l2_comm_i(ptw_l2_comm)
+        .ptw_if       (ptw_link)
     );
 
 
@@ -132,8 +132,7 @@ module bsc_mmu
         .clk_i          (clk_i),
         .rstn_i         (rstn_i),
 
-        .itlb_ptw_comm_i(l2_ptw_comm),
-        .ptw_itlb_comm_o(ptw_l2_comm),
+        .ptw_if(ptw_link),
 
         // dmem request-response
         .dmem_ptw_comm_i(dmem_ptw_comm_i),

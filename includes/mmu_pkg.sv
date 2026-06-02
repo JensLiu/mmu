@@ -237,11 +237,35 @@ package mmu_pkg;
     typedef struct packed {
         ptw_l2_resp_t resp;  // PTW response to TLB translation request.
         logic          invalidate_tlb;  // Signal to flush all entries in TLB and don't allocate in-progress transactions with the PTW.
+        logic          ptw_ready;  // PTW is idle and ready to accept a new request.
     } ptw_l2_comm_t;
 
     typedef l2_ptw_req_t tlb_ptw_req_t;
     typedef l2_ptw_comm_t tlb_ptw_comm_t;
     typedef ptw_l2_comm_t ptw_tlb_comm_t;
+
+    // ---------------------------------------------------------
+    // L2 TLB <-> PTW: unified ready/valid payloads (carry a tag).
+    // Used by l2_ptw_if; the legacy *_comm_t types above are kept for the
+    // (uninstantiated) legacy TLB/PTW modules.
+    // ---------------------------------------------------------
+    parameter PTW_TAG_W = 8;  // opaque tag the PTW echoes (sized for max MSHR / {bank,slot})
+
+    typedef struct packed {
+        logic [VPN_SIZE-1:0]   vpn;
+        logic [ASID_SIZE-1:0]  asid;
+        logic [1:0]            prv;
+        logic                  store;
+        logic                  fetch;
+        logic [PTW_TAG_W-1:0]  tag;
+    } ptw_req_data_t;
+
+    typedef struct packed {
+        pte_t                  pte;
+        logic [LEVEL_BITS-1:0] level;
+        logic                  error;
+        logic [PTW_TAG_W-1:0]  tag;
+    } ptw_rsp_data_t;
 
     ////////////////////////////////
     //

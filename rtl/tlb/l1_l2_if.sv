@@ -27,7 +27,7 @@ interface l1_l2_if #(
     // L1 identically and must not ride the response channel.
     logic invalidate_tlb;
 
-    modport master (
+    modport l1 (
         output req_valid,
         output req_data,
         input req_ready,
@@ -39,7 +39,7 @@ interface l1_l2_if #(
         input invalidate_tlb
     );
 
-    modport slave (
+    modport l2 (
         input req_valid,
         input req_data,
         output req_ready,

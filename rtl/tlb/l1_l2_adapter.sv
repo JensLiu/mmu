@@ -43,7 +43,7 @@ module l1_l2_adapter
     output l2_l1_comm_t l2_l1_comm_o,  // response to the L1
 
     // L2 side (fire-once handshake)
-    l1_l2_if.master ifc
+    l1_l2_if.l1 ifc
 );
 
     logic sent_q;
@@ -51,7 +51,7 @@ module l1_l2_adapter
 
     // ---- Request: present once, gated by sent_q ----
     assign ifc.req_valid = l1_req_valid && !sent_q;
-    assign ifc.req_data  = l1_l2_comm_i.req;   // l1_l2_req_t aliases l1_l2_req_data_t
+    assign ifc.req_data  = l1_l2_comm_i.req;  // l1_l2_req_t aliases l1_l2_req_data_t
 
     wire req_fire = ifc.req_valid && ifc.req_ready;
 
@@ -59,9 +59,9 @@ module l1_l2_adapter
         if (!rstn_i) begin
             sent_q <= 1'b0;
         end else if (!l1_req_valid) begin
-            sent_q <= 1'b0;   // L1 miss resolved -> ready for the next request
+            sent_q <= 1'b0;  // L1 miss resolved -> ready for the next request
         end else if (req_fire) begin
-            sent_q <= 1'b1;   // captured by the L2 -> do not re-present
+            sent_q <= 1'b1;  // captured by the L2 -> do not re-present
         end
     end
 
@@ -70,7 +70,7 @@ module l1_l2_adapter
 
     always_comb begin
         l2_l1_comm_o                = '0;
-        l2_l1_comm_o.resp_valid     = ifc.rsp_valid;   // handshake carries validity
+        l2_l1_comm_o.resp_valid     = ifc.rsp_valid;  // handshake carries validity
         l2_l1_comm_o.resp.error     = ifc.rsp_data.error;
         l2_l1_comm_o.resp.tlb_entry = ifc.rsp_data.tlb_entry;
         l2_l1_comm_o.invalidate_tlb = ifc.invalidate_tlb;

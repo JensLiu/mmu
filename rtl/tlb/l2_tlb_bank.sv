@@ -1,10 +1,10 @@
 /*
- * Copyright 2023 BSC*
+ * Copyright 2026 BSC*
  * *Barcelona Supercomputing Center (BSC)
  *
  * SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
  *
- * Licensed under the Solderpad Hardware License v 2.1 (the “License”); you
+ * Licensed under the Solderpad Hardware License v 2.1 (the "License"); you
  * may not use this file except in compliance with the License, or, at your
  * option, the Apache License version 2.0. You may obtain a copy of the
  * License at
@@ -12,44 +12,87 @@
  * https://solderpad.org/licenses/SHL-2.1/
  *
  * Unless required by applicable law or agreed to in writing, any work
- * distributed under the License is distributed on an “AS IS” BASIS, WITHOUT
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
  * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
  * License for the specific language governing permissions and limitations
  * under the License.
  */
-
-`IGNORE_WARNINGS_BEGIN
-
+// Non-blocking, MSHR-coalescing L2 TLB bank.
+//
+//  - Ingress: probe the store combinationally on the incoming request.
+//      * eff_hit (cam_hit && store_ok) -> load the response engine (1 src)
+//      * miss / store-to-clean         -> allocate (or coalesce) an MSHR slot
+//  - Issue : the MSHR presents a pending walk on the PTW request channel.
+//  - Fill  : a PTW response is captured directly into its slot (keyed by tag).
+//  - Deliver: the MSHR hands the response engine a {cores,result} snapshot; the
+//    engine drains one src/cycle and, on a terminal deliver, writes the cache.
+//
+// The store is the correctness backstop and is written exactly once per slot,
+// on its terminal deliver (so each VPN appears at most once in the store).
 module l2_tlb_bank
     import mmu_pkg::*;
 #(
-    parameter int unsigned SRC_W       = 1,   // = LOG2UP(NUM_REQS)
-    parameter int unsigned TLB_ENTRIES = 8
+    parameter int unsigned SRC_W       = 1,  // = LOG2UP(NUM_SRCS)
+    parameter int unsigned NUM_SRCS    = 2,  // requesters served by this bank
+    parameter int unsigned TLB_ENTRIES = 8,
+    parameter int unsigned MSHR_SIZE   = 4
 ) (
-    input logic clk_i,  // System clock signal.
-    input logic rstn_i, // System reset signal (active low).
+    input logic clk_i,
+    input logic rstn_i,
 
     // Request in (fire-once, from the request xbar output)
     input  logic                        req_valid_i,
     output logic                        req_ready_o,
     input  l1_l2_req_data_t             req_data_i,
-    input  logic            [SRC_W-1:0] req_src_i,    // origin L1 (xbar sel_out)
+    input  logic            [SRC_W-1:0] req_src_i,
 
     // Response out (fire-once, to the response xbar input)
     output logic                        rsp_valid_o,
     input  logic                        rsp_ready_i,
     output l2_l1_rsp_data_t             rsp_data_o,
-    output logic            [SRC_W-1:0] rsp_src_o,    // threaded → rsp xbar sel_in
+    output logic            [SRC_W-1:0] rsp_src_o,
 
-    //  PTW master
-    output l2_ptw_comm_t l2_ptw_comm_o,
-    input  ptw_l2_comm_t ptw_l2_comm_i
+    // PTW master (unified ready/valid)
+    l2_ptw_if.tlb ptw_if
 );
 
     localparam int unsigned TLB_IDX_SIZE = $clog2(TLB_ENTRIES);
+    localparam int unsigned MSHR_TAG_W = (MSHR_SIZE > 1) ? $clog2(MSHR_SIZE) : 1;
 
     // -------------------------------------------------------------------------
-    // Store (single read port - the bank serves one request at a time)
+    // pte_t -> payload / cache entry helpers
+    // -------------------------------------------------------------------------
+    /* verilator lint_off UNUSEDSIGNAL */
+    function automatic l2_l1_rsp_data_t rsp_from_pte(
+        input pte_t pte, input logic [LEVEL_BITS-1:0] level, input logic error);
+        rsp_from_pte                    = '0;
+        rsp_from_pte.error              = error;
+        rsp_from_pte.tlb_entry.ppn      = pte.ppn;
+        rsp_from_pte.tlb_entry.level    = 2'(level);
+        rsp_from_pte.tlb_entry.dirty    = pte.d;
+        rsp_from_pte.tlb_entry.access   = pte.a;
+        rsp_from_pte.tlb_entry.perms.ur = pte.r & pte.u & pte.v;
+        rsp_from_pte.tlb_entry.perms.uw = pte.w & pte.u & pte.v;
+        rsp_from_pte.tlb_entry.perms.ux = pte.x & pte.u & pte.v;
+        rsp_from_pte.tlb_entry.perms.sr = pte.r & ~pte.u & pte.v;
+        rsp_from_pte.tlb_entry.perms.sw = pte.w & ~pte.u & pte.v;
+        rsp_from_pte.tlb_entry.perms.sx = pte.x & ~pte.u & pte.v;
+        rsp_from_pte.tlb_entry.valid    = !error;
+        rsp_from_pte.tlb_entry.nempty   = 1'b1;
+    endfunction
+
+    function automatic tlb_entry_t entry_from_pte(
+        input pte_t pte, input logic [LEVEL_BITS-1:0] level, input logic [VPN_SIZE-1:0] vpn,
+        input logic [ASID_SIZE-1:0] asid);
+        l2_l1_rsp_data_t r = rsp_from_pte(pte, level, 1'b0);
+        entry_from_pte      = r.tlb_entry;
+        entry_from_pte.vpn  = vpn;
+        entry_from_pte.asid = asid;
+    endfunction
+    /* verilator lint_on UNUSEDSIGNAL */
+
+    // -------------------------------------------------------------------------
+    // Store (single read port - probed combinationally per request)
     // -------------------------------------------------------------------------
     tlb_storage_if #(
         .TLB_ENTRIES   (TLB_ENTRIES),
@@ -65,102 +108,134 @@ module l2_tlb_bank
         .tlb_storage_if(tlb_storage_if)
     );
 
-    // -------------------------------------------------------------------------
-    // Combinational probe on the incoming request (only sampled on a req fire)
-    // -------------------------------------------------------------------------
     assign tlb_storage_if.read_req[0].vpn  = req_data_i.vpn;
     assign tlb_storage_if.read_req[0].asid = req_data_i.asid;
 
-    wire                    cam_hit   = tlb_storage_if.read_resp[0].is_hit;
-    tlb_entry_t             hit_entry;
-    logic [TLB_IDX_SIZE-1:0] hit_idx;
+    tlb_entry_t                    hit_entry;
+    logic       [TLB_IDX_SIZE-1:0] hit_idx;
     assign hit_entry = tlb_storage_if.read_resp[0].hit_entry;
     assign hit_idx   = tlb_storage_if.read_resp[0].hit_idx;
-    // store_hit is computed in the L1 (pte_perm_check) and forwarded.
-    wire                    store_ok  = req_data_i.store_hit;
-    wire                    eff_hit   = cam_hit && store_ok;
+
+    wire                   cam_hit = tlb_storage_if.read_resp[0].is_hit;
+    wire                   store_hit = req_data_i.store_hit;  // computed in the L1 (pte_perm_check)
+    wire                   eff_hit = cam_hit && store_hit;
 
     // -------------------------------------------------------------------------
-    // FSM
+    // MSHR
     // -------------------------------------------------------------------------
-    typedef enum logic [1:0] {
-        S_IDLE,
-        S_WAIT_PTW,
-        S_RESP
-    } state_t;
+    logic                  allocate_ready;
 
-    state_t           state_q, state_n;
-    l1_l2_req_data_t  req_q;     // latched request (PTW fields + store write vpn/asid)
-    logic [SRC_W-1:0] src_q;     // latched source id
-    l2_l1_rsp_data_t  rsp_q;     // latched response to present
+    logic                  deliver_valid;
+    logic                  deliver_ready;
+    logic [  NUM_SRCS-1:0] deliver_cores;
+    pte_t                  deliver_pte;
+    logic [LEVEL_BITS-1:0] deliver_level;
+    logic                  deliver_error;
+    logic [  VPN_SIZE-1:0] deliver_vpn;
+    logic [ ASID_SIZE-1:0] deliver_asid;
+    logic                  deliver_write_cache;
 
-    wire req_fire = req_valid_i && req_ready_o;
-    wire rsp_fire = rsp_valid_o && rsp_ready_i;
-    wire ptw_done = (state_q == S_WAIT_PTW) && ptw_l2_comm_i.resp.valid;
+    wire                   req_fire = req_valid_i && req_ready_o;
+    wire                   alloc_valid = req_valid_i && !eff_hit;  // miss (incl. store-to-clean)
 
-    // PTW result -> L1 response. vpn/asid are filled by the L1 from its own
-    // request when it writes its CAM, so they are left zero here.
-    l2_l1_rsp_data_t ptw_as_rsp;
-    always_comb begin
-        ptw_as_rsp = '0;
-        ptw_as_rsp.error = ptw_l2_comm_i.resp.error;
-        ptw_as_rsp.tlb_entry.ppn = ptw_l2_comm_i.resp.pte.ppn;
-        ptw_as_rsp.tlb_entry.level = 2'(ptw_l2_comm_i.resp.level);
-        ptw_as_rsp.tlb_entry.dirty = ptw_l2_comm_i.resp.pte.d;
-        ptw_as_rsp.tlb_entry.access = ptw_l2_comm_i.resp.pte.a;
-        ptw_as_rsp.tlb_entry.perms.ur = ptw_l2_comm_i.resp.pte.r &  ptw_l2_comm_i.resp.pte.u & ptw_l2_comm_i.resp.pte.v;
-        ptw_as_rsp.tlb_entry.perms.uw = ptw_l2_comm_i.resp.pte.w &  ptw_l2_comm_i.resp.pte.u & ptw_l2_comm_i.resp.pte.v;
-        ptw_as_rsp.tlb_entry.perms.ux = ptw_l2_comm_i.resp.pte.x &  ptw_l2_comm_i.resp.pte.u & ptw_l2_comm_i.resp.pte.v;
-        ptw_as_rsp.tlb_entry.perms.sr = ptw_l2_comm_i.resp.pte.r & ~ptw_l2_comm_i.resp.pte.u & ptw_l2_comm_i.resp.pte.v;
-        ptw_as_rsp.tlb_entry.perms.sw = ptw_l2_comm_i.resp.pte.w & ~ptw_l2_comm_i.resp.pte.u & ptw_l2_comm_i.resp.pte.v;
-        ptw_as_rsp.tlb_entry.perms.sx = ptw_l2_comm_i.resp.pte.x & ~ptw_l2_comm_i.resp.pte.u & ptw_l2_comm_i.resp.pte.v;
-        ptw_as_rsp.tlb_entry.valid = ptw_l2_comm_i.resp.valid & ~ptw_l2_comm_i.resp.error;
-        ptw_as_rsp.tlb_entry.nempty = ptw_l2_comm_i.resp.valid;
+    l2_tlb_mshr #(
+        .MSHR_SIZE(MSHR_SIZE),
+        .NUM_CORES(NUM_SRCS)
+    ) mshr (
+        .clk_i                (clk_i),
+        .rstn_i               (rstn_i),
+        // allocate
+        .allocate_valid_i     (alloc_valid),
+        .allocate_ready_o     (allocate_ready),
+        .allocate_vpn_i       (req_data_i.vpn),
+        .allocate_asid_i      (req_data_i.asid),
+        .allocate_set_dirty_i (req_data_i.store),
+        .allocate_prv_i       (req_data_i.prv),
+        .allocate_fetch_i     (req_data_i.fetch),
+        .allocate_core_id_i   (req_src_i),
+        // issue
+        .issue_valid_o        (ptw_if.req_valid),
+        .issue_ready_i        (ptw_if.req_ready),
+        .issue_id_o           (ptw_if.req_data.tag[MSHR_TAG_W-1:0]),
+        .issue_vpn_o          (ptw_if.req_data.vpn),
+        .issue_asid_o         (ptw_if.req_data.asid),
+        .issue_set_dirty_o    (ptw_if.req_data.store),
+        .issue_prv_o          (ptw_if.req_data.prv),
+        .issue_fetch_o        (ptw_if.req_data.fetch),
+        // fill
+        .fill_valid_i         (ptw_if.rsp_valid),
+        .fill_ready_o         (ptw_if.rsp_ready),
+        .fill_id_i            (MSHR_TAG_W'(ptw_if.rsp_data.tag)),
+        .fill_pte_i           (ptw_if.rsp_data.pte),
+        .fill_level_i         (ptw_if.rsp_data.level),
+        .fill_error_i         (ptw_if.rsp_data.error),
+        // deliver
+        .deliver_valid_o      (deliver_valid),
+        .deliver_ready_i      (deliver_ready),
+        .deliver_cores_o      (deliver_cores),
+        .deliver_pte_o        (deliver_pte),
+        .deliver_level_o      (deliver_level),
+        .deliver_error_o      (deliver_error),
+        .deliver_vpn_o        (deliver_vpn),
+        .deliver_asid_o       (deliver_asid),
+        .deliver_write_cache_o(deliver_write_cache),
+        `UNUSED_PIN(pending_entries_o)
+    );
+
+    // The MSHR slot id (issue_id_o) drives the low tag bits above; zero-extend
+    // the rest of the opaque PTW tag field (room for {bank,slot} later).
+    if (PTW_TAG_W > MSHR_TAG_W) begin : g_tag_hi
+        assign ptw_if.req_data.tag[PTW_TAG_W-1:MSHR_TAG_W] = '0;
     end
 
-    // Hit response (cached entry returned directly).
-    l2_l1_rsp_data_t hit_rsp;
+    // -------------------------------------------------------------------------
+    // Response engine: serializes a coalesced deliver (or a single hit) onto the
+    // response port, one src/cycle.  Payload-opaque - it receives finished rsp
+    // structs (PTE expansion + the cache write stay here in the bank).
+    // -------------------------------------------------------------------------
+    l2_l1_rsp_data_t deliver_rsp, hit_rsp;
+    assign deliver_rsp = rsp_from_pte(deliver_pte, deliver_level, deliver_error);
     always_comb begin
         hit_rsp           = '0;
-        hit_rsp.error     = 1'b0;
         hit_rsp.tlb_entry = hit_entry;
     end
 
-    always_comb begin
-        state_n = state_q;
-        if (!rstn_i) begin
-            state_n = S_IDLE;
-        end else begin
-            unique case (state_q)
-                S_IDLE:     if (req_fire) state_n = eff_hit ? S_RESP : S_WAIT_PTW;
-                S_WAIT_PTW: if (ptw_l2_comm_i.resp.valid) state_n = S_RESP;
-                S_RESP:     if (rsp_fire) state_n = S_IDLE;
-                default:    state_n = S_IDLE;
-            endcase
-        end
-    end
+    logic eng_hit_ready;
+    l2_tlb_bank_response_engine #(
+        .NUM_CORES(NUM_SRCS)
+    ) resp_engine (
+        .clk_i               (clk_i),
+        .rstn_i              (rstn_i),
+        // MSHR deliver -> engine
+        .mshr_deliver_valid_i(deliver_valid),
+        .mshr_deliver_ready_o(deliver_ready),
+        .mshr_deliver_cores_i(deliver_cores),
+        .mshr_deliver_rsp_i  (deliver_rsp),
+        // direct hit -> engine
+        .tlb_hit_valid_i     (req_valid_i && eff_hit),
+        .tlb_hit_ready_o     (eng_hit_ready),
+        .tlb_hit_core_i      (req_src_i),
+        .tlb_hit_rep_i       (hit_rsp),
+        // engine -> bank response port
+        .rsp_valid_o         (rsp_valid_o),
+        .rsp_ready_i         (rsp_ready_i),
+        .rsp_data_o          (rsp_data_o),
+        .rsp_src_o           (rsp_src_o)
+    );
 
-    always_ff @(posedge clk_i) begin
-        if (!rstn_i) begin
-            state_q <= S_IDLE;
-            req_q   <= '0;
-            src_q   <= '0;
-            rsp_q   <= '0;
-        end else begin
-            state_q <= state_n;
-            if (req_fire) begin
-                req_q <= req_data_i;
-                src_q <= req_src_i;
-                if (eff_hit) rsp_q <= hit_rsp;   // L2 hit: respond from the cache
-            end
-            if (ptw_done) begin
-                rsp_q <= ptw_as_rsp;             // miss resolved: respond from the walk
-            end
-        end
+    // -------------------------------------------------------------------------
+    // Request acceptance
+    //   eff_hit : the engine accepts the hit (deliver has priority internally)
+    //   miss    : the MSHR accepts (its ready drops on a deliver snapshot)
+    // -------------------------------------------------------------------------
+    always_comb begin
+        if (!rstn_i) req_ready_o = 1'b0;
+        else if (eff_hit) req_ready_o = eng_hit_ready;
+        else req_ready_o = allocate_ready;
     end
 
     // -------------------------------------------------------------------------
-    // Eviction (NRU). Single hit port.
+    // Eviction (NRU)
     // -------------------------------------------------------------------------
     logic                    acc_hit[1];
     logic [TLB_IDX_SIZE-1:0] acc_idx[1];
@@ -185,66 +260,35 @@ module l2_tlb_bank
     );
 
     // -------------------------------------------------------------------------
-    // Store updates: fill on a completed walk; flush on invalidate or on a
-    // store to a clean (non-dirty) hit (forces a re-walk to set the dirty bit).
+    // Store updates: write on a terminal deliver; clear on invalidate or on a
+    // store-to-clean hit (drop the clean entry so the dirty walk re-fills it).
+    // (write and store-to-clean clear can never coincide: a miss cannot fire on
+    //  a deliver_fire cycle.  TODO: invalidate does not squash in-flight MSHR.)
     // -------------------------------------------------------------------------
-    assign write_tlb = ptw_done;
+    wire deliver_fire = deliver_valid && deliver_ready;  // engine accepted the snapshot
+    assign write_tlb = deliver_fire && deliver_write_cache;
 
     logic [TLB_ENTRIES-1:0] clear_mask;
     logic                   clear_tlb;
     always_comb begin
         clear_tlb  = 1'b0;
         clear_mask = '0;
-        if (ptw_l2_comm_i.invalidate_tlb) begin
+        if (ptw_if.invalidate_tlb) begin
             clear_tlb  = 1'b1;
             clear_mask = {TLB_ENTRIES{1'b1}};
-        end else if (req_fire && cam_hit && !store_ok) begin
+        end else if (req_fire && cam_hit && !store_hit) begin
             clear_tlb           = 1'b1;
-            clear_mask[hit_idx] = 1'b1;   // drop the clean entry; the walk re-fills it dirty
+            clear_mask[hit_idx] = 1'b1;
         end
     end
 
-    assign tlb_storage_if.update_req.write_tlb        = write_tlb;
-    assign tlb_storage_if.update_req.write_idx        = eviction_idx;
-    assign tlb_storage_if.update_req.write_entry.vpn  = req_q.vpn;
-    assign tlb_storage_if.update_req.write_entry.asid = req_q.asid;
-    assign tlb_storage_if.update_req.write_entry.ppn     = ptw_l2_comm_i.resp.pte.ppn;
-    assign tlb_storage_if.update_req.write_entry.level   = ptw_l2_comm_i.resp.level;
-    assign tlb_storage_if.update_req.write_entry.dirty   = ptw_l2_comm_i.resp.pte.d;
-    assign tlb_storage_if.update_req.write_entry.access  = ptw_l2_comm_i.resp.pte.a;
-    assign tlb_storage_if.update_req.write_entry.perms.ur = ptw_l2_comm_i.resp.pte.r &  ptw_l2_comm_i.resp.pte.u & ptw_l2_comm_i.resp.pte.v;
-    assign tlb_storage_if.update_req.write_entry.perms.uw = ptw_l2_comm_i.resp.pte.w &  ptw_l2_comm_i.resp.pte.u & ptw_l2_comm_i.resp.pte.v;
-    assign tlb_storage_if.update_req.write_entry.perms.ux = ptw_l2_comm_i.resp.pte.x &  ptw_l2_comm_i.resp.pte.u & ptw_l2_comm_i.resp.pte.v;
-    assign tlb_storage_if.update_req.write_entry.perms.sr = ptw_l2_comm_i.resp.pte.r & ~ptw_l2_comm_i.resp.pte.u & ptw_l2_comm_i.resp.pte.v;
-    assign tlb_storage_if.update_req.write_entry.perms.sw = ptw_l2_comm_i.resp.pte.w & ~ptw_l2_comm_i.resp.pte.u & ptw_l2_comm_i.resp.pte.v;
-    assign tlb_storage_if.update_req.write_entry.perms.sx = ptw_l2_comm_i.resp.pte.x & ~ptw_l2_comm_i.resp.pte.u & ptw_l2_comm_i.resp.pte.v;
-    assign tlb_storage_if.update_req.write_entry.valid    = !ptw_l2_comm_i.resp.error;
-    assign tlb_storage_if.update_req.write_entry.nempty   = 1'b1;
-    assign tlb_storage_if.clear_req.clear_tlb  = clear_tlb;
+    tlb_entry_t deliver_entry;
+    assign deliver_entry = entry_from_pte(deliver_pte, deliver_level, deliver_vpn, deliver_asid);
+
+    assign tlb_storage_if.update_req.write_tlb = write_tlb;
+    assign tlb_storage_if.update_req.write_idx = eviction_idx;
+    assign tlb_storage_if.update_req.write_entry = deliver_entry;
+    assign tlb_storage_if.clear_req.clear_tlb = clear_tlb;
     assign tlb_storage_if.clear_req.clear_mask = clear_mask;
 
-    // -------------------------------------------------------------------------
-    // Outputs
-    // -------------------------------------------------------------------------
-    assign req_ready_o = (state_q == S_IDLE);
-
-    // PTW request held stable while the walk is in flight.
-    always_comb begin
-        l2_ptw_comm_o = '0;
-        if (state_q == S_WAIT_PTW) begin
-            l2_ptw_comm_o.req.valid = 1'b1;
-            l2_ptw_comm_o.req.vpn   = req_q.vpn;
-            l2_ptw_comm_o.req.asid  = req_q.asid;
-            l2_ptw_comm_o.req.prv   = req_q.prv;
-            l2_ptw_comm_o.req.store = req_q.store;
-            l2_ptw_comm_o.req.fetch = req_q.fetch;
-        end
-    end
-
-    assign rsp_valid_o = (state_q == S_RESP);
-    assign rsp_data_o  = rsp_q;
-    assign rsp_src_o   = src_q;
-
 endmodule
-
-`IGNORE_WARNINGS_END
