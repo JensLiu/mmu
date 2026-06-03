@@ -20,7 +20,11 @@
 
 `IGNORE_WARNINGS_BEGIN
 
-module l1_tlb
+// L1 TLB: per-core, fully-associative, multi-ported CAM datapath.  Miss handling
+// (serialise -> single fire-once L2 request -> fill) is delegated to
+// l1_tlb_request_engine; this module owns the CAM, the permission checks, the
+// replacement policy, the storage writes/flushes, and the core response.
+module l1_tlb_v2
     import mmu_pkg::*;
 #(
     parameter int unsigned NUM_TLB_PORTS = 1,
@@ -33,20 +37,12 @@ module l1_tlb
     input  core_tlb_comm_t core_tlb_comms_i[NUM_TLB_PORTS],  // Communication from translation requester to L1 TLB.
     output tlb_core_comm_t tlb_core_comms_o[NUM_TLB_PORTS],  // Communication from L1 TLB to translation requester.
 
-    l1_l2_if.master l1_l2_if
+    // L2 TLB interface (fire-once handshake)
+    l1_l2_if.l1 l2_if
 );
 
-    localparam int unsigned TLB_IDX_SIZE = $clog2(TLB_ENTRIES);
-
-    // Break combinational feedback from the PTW/L2 response path to request generation.
-    l2_l1_comm_t l2_l1_comm_q;
-    always_ff @(posedge clk_i) begin
-        if (!rstn_i) begin
-            l2_l1_comm_q <= '0;
-        end else begin
-            l2_l1_comm_q <= l2_l1_comm_i;
-        end
-    end
+    localparam int unsigned TLB_IDX_SIZE   = $clog2(TLB_ENTRIES);
+    localparam int unsigned TLB_PORT_IDX_W = (NUM_TLB_PORTS > 1) ? $clog2(NUM_TLB_PORTS) : 1;
 
     // -------------------------------------------------------------------------
     // TLB Storage: A generalisation of the TLB Table
@@ -65,7 +61,6 @@ module l1_tlb
         .tlb_storage_if(tlb_storage_if)
     );
 
-
     // -------------------------------------------------------------------------
     // Parallel CAM hit logic
     // -------------------------------------------------------------------------
@@ -74,6 +69,7 @@ module l1_tlb
     logic       [   LEVEL_BITS-1:0] hit_level_per_port[NUM_TLB_PORTS];
     logic       [ TLB_IDX_SIZE-1:0] hit_idx_per_port  [NUM_TLB_PORTS];
     logic       [NUM_TLB_PORTS-1:0] tlb_miss_per_port;
+    logic       [NUM_TLB_PORTS-1:0] req_valid_per_port;
     logic       [     VPN_SIZE-1:0] vpn_per_port      [NUM_TLB_PORTS];
     for (genvar i = 0; i < NUM_TLB_PORTS; ++i) begin : g_cam_logic
         logic vm_enable;
@@ -84,6 +80,7 @@ module l1_tlb
         assign hit_entry_per_port[i] = tlb_storage_if.read_resp[i].hit_entry;
         assign hit_level_per_port[i] = tlb_storage_if.read_resp[i].hit_level;
         assign hit_idx_per_port[i] = tlb_storage_if.read_resp[i].hit_idx;
+        assign req_valid_per_port[i] = core_tlb_comms_i[i].req.valid;
         assign tlb_miss_per_port[i] = core_tlb_comms_i[i].req.valid && vm_enable && !(hit_cam_per_port[i]);
         assign vpn_per_port[i] = core_tlb_comms_i[i].req.vpn;
     end
@@ -91,7 +88,6 @@ module l1_tlb
     // -------------------------------------------------------------------------
     // Parallel TLB Hit/Miss logic and Permission Check
     // -------------------------------------------------------------------------
-    // Parallel Hit logic
     logic tlb_hit_per_port  [NUM_TLB_PORTS];
     logic store_hit_per_port[NUM_TLB_PORTS];
 
@@ -135,89 +131,71 @@ module l1_tlb
         assign xcpt_lds[port] = (vm_enable && ((tlb_hit_per_port[port] && !read_ok)
                 ||entry_no_access_bit)
             ) ? 1'b1 : 1'b0;
-
     end
 
     // -------------------------------------------------------------------------
-    // Serialised TLB Miss Handling
+    // L2 request payload, per port (the engine selects the granted one).
     // -------------------------------------------------------------------------
+    l1_l2_req_data_t req_data_per_port[NUM_TLB_PORTS];
+    for (genvar i = 0; i < NUM_TLB_PORTS; ++i) begin : g_req_data
+        assign req_data_per_port[i].vpn       = core_tlb_comms_i[i].req.vpn[VPN_SIZE-1:0];
+        assign req_data_per_port[i].asid      = core_tlb_comms_i[i].req.asid;
+        assign req_data_per_port[i].prv       = core_tlb_comms_i[i].priv_lvl;
+        assign req_data_per_port[i].store     = core_tlb_comms_i[i].req.store;
+        assign req_data_per_port[i].store_hit = store_hit_per_port[i];
+        assign req_data_per_port[i].fetch     = core_tlb_comms_i[i].req.instruction;
+    end
 
-    // Select one TLB miss to serve, on simultanious TLB miss on the same TLB entry,
-    // after the first serve, all other CAM will become hits
-    logic                                                       miss_grant_next;
-    logic                                                       miss_active;
-    logic [(NUM_TLB_PORTS > 1 ? $clog2(NUM_TLB_PORTS) : 1)-1:0] miss_port;
+    // -------------------------------------------------------------------------
+    // Miss request engine: serialise misses -> single fire-once L2 request -> fill
+    // -------------------------------------------------------------------------
+    logic [TLB_PORT_IDX_W-1:0] active_port;
+    logic                      clear_req;
+    logic                      fill_valid;
+    l2_l1_rsp_data_t           fill_data;
+    logic                      invalidate;
 
-    request_serialiser #(
-        .NUM_PORTS(NUM_TLB_PORTS)
-    ) tlb_miss_serialiser (
-        .clk_i       (clk_i),
-        .rstn_i      (rstn_i),
-        .tlb_misses_i(tlb_miss_per_port),
-        .grant_next_i(miss_grant_next),
-        .active_o    (miss_active),
-        .active_idx_o(miss_port)
+    l1_tlb_request_engine #(
+        .NUM_TLB_PORTS(NUM_TLB_PORTS)
+    ) request_engine (
+        .clk_i        (clk_i),
+        .rstn_i       (rstn_i),
+        .req_valid_i  (req_valid_per_port),
+        .tlb_miss_i   (tlb_miss_per_port),
+        .req_data_i   (req_data_per_port),
+        .active_port_o(active_port),
+        .clear_req_o  (clear_req),
+        .fill_valid_o (fill_valid),
+        .fill_data_o  (fill_data),
+        .invalidate_o (invalidate),
+        .l2_if        (l2_if)
     );
 
-    // TODO: check this logic?
-    // We can grant the next miss when the FSM has finished processing the current miss;
-    assign miss_grant_next = req_finished;
+    // Granted-port selections (used for the store-to-clean clear and the fill).
+    wire                    hit_cam   = hit_cam_per_port[active_port];
+    wire                    store_hit = store_hit_per_port[active_port];
+    wire [TLB_IDX_SIZE-1:0] hit_idx   = hit_idx_per_port[active_port];
 
-    // Clamp miss_port to a valid index. The serialiser guarantees
-    // miss_port < NUM_TLB_PORTS during operation, but for the single-port case
-    // miss_port is a 1-bit register that Verilator's --x-initial unique can
-    // initialise to 1, causing an out-of-bounds access (segfault) before the
-    // synchronous reset takes effect.
-    localparam int unsigned TLB_PORT_IDX_W = (NUM_TLB_PORTS > 1) ? $clog2(NUM_TLB_PORTS) : 1;
-    logic [TLB_PORT_IDX_W-1:0] port_idx;
-    assign port_idx = (NUM_TLB_PORTS == 1) ? '0 : miss_port;
-
-    logic tlb_hit, tlb_miss, store_hit, vm_enable, passthrough, hit_cam;
-    tlb_entry_t                    hit_entry;
-    logic       [TLB_IDX_SIZE-1:0] hit_idx;
-    assign hit_entry   = tlb_hit_per_port[port_idx] ? hit_entry_per_port[port_idx] : '0;
-    assign tlb_hit     = tlb_hit_per_port[port_idx];
-    assign tlb_miss    = tlb_miss_per_port[port_idx];
-    assign hit_idx     = hit_idx_per_port[port_idx];
-    assign store_hit   = store_hit_per_port[port_idx];
-    assign vm_enable   = core_tlb_comms_i[port_idx].vm_enable;
-    assign passthrough = core_tlb_comms_i[port_idx].req.passthrough;
-    assign hit_cam     = hit_cam_per_port[port_idx];
-
-    // Flush
+    // -------------------------------------------------------------------------
+    // Flush: TLBI clears all; otherwise a store to a clean hit drops that entry.
+    // -------------------------------------------------------------------------
+    logic                   clear_tlb;
     logic [TLB_ENTRIES-1:0] clear_mask;
-    logic                   clear_tlb_req;
     always_comb begin
         clear_tlb  = 1'b0;
         clear_mask = '0;
-        if (l2_l1_comm_q.invalidate_tlb) begin
+        if (invalidate) begin
             clear_tlb  = 1'b1;
             clear_mask = {TLB_ENTRIES{1'b1}};
-        end else if (clear_tlb_req) begin
+        end else if (clear_req) begin
             clear_tlb           = 1'b1;
-            // Flush cam hit in a non-dirty page when store arrives
             clear_mask[hit_idx] = (hit_cam && !store_hit);
         end
     end
 
-    // L1 Miss Request FSM
-    logic write_tlb, clear_tlb, req_finished, req_inflight;
-    l2_req_fsm miss_req_fsm (
-        .clk_i           (clk_i),
-        .rstn_i          (rstn_i),
-        // Input Flags
-        .req_valid_i     (core_tlb_comms_i[port_idx].req.valid),
-        .tlb_miss_i      (tlb_miss),
-        .invalidate_tlb_i(l2_l1_comm_q.invalidate_tlb),
-        .rsp_valid_i     (l2_l1_comm_q.resp.valid),
-        // Output Flags
-        .req_inflight_o  (req_inflight),
-        .req_finished_o  (req_finished),
-        .write_tlb_o     (write_tlb),
-        .clear_tlb_o     (clear_tlb_req)
-    );
-
+    // -------------------------------------------------------------------------
     // Eviction / Victim Selection
+    // -------------------------------------------------------------------------
     logic unsigned [TLB_IDX_SIZE-1:0] eviction_idx;
     eviction_policy #(
         .NUM_ENTRIES  (TLB_ENTRIES),
@@ -227,36 +205,27 @@ module l1_tlb
         .rstn_i                 (rstn_i),
         .access_hit_i           (hit_cam_per_port),
         .access_idx_i           (hit_idx_per_port),
-        .write_event_i          (write_tlb),
+        .write_event_i          (fill_valid),
         .write_idx_i            (eviction_idx),
         .tlb_has_invalid_entry_i(tlb_storage_if.tlb_has_invalid_entry),
         .tlb_invalid_entry_idx_i(tlb_storage_if.tlb_invalid_entry_idx),
         .evict_idx_o            (eviction_idx)
     );
 
-    // L1-L2 TLB send request
-    always_comb begin
-        // Problematic when always asserting the valid flag
-        l1_l2_comm_o.req.valid     = req_inflight;
-        l1_l2_comm_o.req.store_hit = store_hit_per_port[port_idx];
-        l1_l2_comm_o.req.vpn       = core_tlb_comms_i[port_idx].req.vpn[VPN_SIZE-1:0];
-        l1_l2_comm_o.req.asid      = core_tlb_comms_i[port_idx].req.asid;
-        l1_l2_comm_o.req.prv       = core_tlb_comms_i[port_idx].priv_lvl;
-        l1_l2_comm_o.req.store     = core_tlb_comms_i[port_idx].req.store;
-        l1_l2_comm_o.req.fetch     = core_tlb_comms_i[port_idx].req.instruction;
-    end
-
-    // TLB Storage communication
-    assign tlb_storage_if.update_req.write_tlb = write_tlb;
+    // -------------------------------------------------------------------------
+    // TLB Storage communication. Fill uses the engine's registered L2 response,
+    // with the VPN/ASID of the granted miss port (held stable by the engine).
+    // -------------------------------------------------------------------------
+    assign tlb_storage_if.update_req.write_tlb = fill_valid;
     assign tlb_storage_if.update_req.write_idx = eviction_idx;
-    assign tlb_storage_if.update_req.write_entry.vpn = core_tlb_comms_i[port_idx].req.vpn[VPN_SIZE-1:0];
-    assign tlb_storage_if.update_req.write_entry.asid = core_tlb_comms_i[port_idx].req.asid;
-    assign tlb_storage_if.update_req.write_entry.ppn = l2_l1_comm_q.resp.tlb_entry.ppn;
-    assign tlb_storage_if.update_req.write_entry.level = l2_l1_comm_q.resp.tlb_entry.level;
-    assign tlb_storage_if.update_req.write_entry.dirty = l2_l1_comm_q.resp.tlb_entry.dirty;
-    assign tlb_storage_if.update_req.write_entry.access = l2_l1_comm_q.resp.tlb_entry.access;
-    assign tlb_storage_if.update_req.write_entry.perms = l2_l1_comm_q.resp.tlb_entry.perms;
-    assign tlb_storage_if.update_req.write_entry.valid = !l2_l1_comm_q.resp.error;
+    assign tlb_storage_if.update_req.write_entry.vpn = core_tlb_comms_i[active_port].req.vpn[VPN_SIZE-1:0];
+    assign tlb_storage_if.update_req.write_entry.asid = core_tlb_comms_i[active_port].req.asid;
+    assign tlb_storage_if.update_req.write_entry.ppn = fill_data.tlb_entry.ppn;
+    assign tlb_storage_if.update_req.write_entry.level = fill_data.tlb_entry.level;
+    assign tlb_storage_if.update_req.write_entry.dirty = fill_data.tlb_entry.dirty;
+    assign tlb_storage_if.update_req.write_entry.access = fill_data.tlb_entry.access;
+    assign tlb_storage_if.update_req.write_entry.perms = fill_data.tlb_entry.perms;
+    assign tlb_storage_if.update_req.write_entry.valid = !fill_data.error;
     assign tlb_storage_if.update_req.write_entry.nempty = 1'b1;
     assign tlb_storage_if.clear_req.clear_tlb = clear_tlb;
     assign tlb_storage_if.clear_req.clear_mask = clear_mask;
@@ -269,12 +238,13 @@ module l1_tlb
     // bits of the stored PPN are meaningless; those bits come from the VPN instead.
     //   l=LEVELS-1 (4 KB page): use stored PPN directly.
     //   l=0        (largest superpage): replace bottom (LEVELS-1)*PAGE_LVL_BITS bits.
-
-    // Each level's PPN assignment
     logic [PPN_SIZE-1:0] ppn_per_port_per_lvl   [NUM_TLB_PORTS] [LEVELS];
     logic [  LEVELS-1:0] hit_per_port_per_lvl   [NUM_TLB_PORTS];
     logic [PPN_SIZE-1:0] ppn_translated_per_port[NUM_TLB_PORTS];
     for (genvar port = 0; port < NUM_TLB_PORTS; ++port) begin : g_ppn_assignment
+        logic vm_enable, passthrough;
+        assign vm_enable   = core_tlb_comms_i[port].vm_enable;
+        assign passthrough = core_tlb_comms_i[port].req.passthrough;
 
         for (genvar lvl = 0; lvl < LEVELS; ++lvl) begin : g_hit_per_lvl
             assign hit_per_port_per_lvl[port][lvl] =  hit_cam_per_port[port] && (
