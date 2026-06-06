@@ -199,23 +199,6 @@ package mmu_pkg;
         tlb_entry_t tlb_entry;
     } inter_tlb_rsp_data_t;
 
-    // Legacy Interface
-    typedef inter_tlb_req_data_t l1_l2_req_data_t;  // alias: pre-rename request payload
-    typedef inter_tlb_rsp_data_t l2_l1_rsp_data_t;  // alias: pre-rename response payload
-    typedef inter_tlb_req_data_t l1_l2_req_t;
-    typedef struct packed {
-        logic       valid;
-        l1_l2_req_t req;
-    } l1_l2_comm_t;
-
-
-    typedef inter_tlb_rsp_data_t l2_l1_resp_t;  // alias: held-valid L2->L1 response payload
-    typedef struct packed {
-        logic        resp_valid;
-        l2_l1_resp_t resp;
-        logic        invalidate_tlb;
-    } l2_l1_comm_t;
-
     // ---------------------------------------------------------
     // L2 TLB - PTW communication
     // ---------------------------------------------------------

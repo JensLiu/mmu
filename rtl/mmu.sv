@@ -19,7 +19,7 @@
  */
 
 
-module bsc_mmu
+module mmu
     import mmu_pkg::*;
 #(
     parameter int unsigned XLEN               = 32,
@@ -100,13 +100,10 @@ module bsc_mmu
     ) ptw_inst (
         .clk_i          (clk_i),
         .rstn_i         (rstn_i),
-
         .ptw_if(ptw_link[0]),
-
         // dmem request-response
         .dmem_ptw_comm_i(dmem_ptw_comm_i),
         .ptw_dmem_comm_o(ptw_dmem_comm_o),
-
         // csr interface
         .csr_ptw_comm_i(csr_ptw_comm_i)
     );

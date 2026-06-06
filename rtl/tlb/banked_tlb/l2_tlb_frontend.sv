@@ -36,8 +36,8 @@ module l2_tlb_frontend
 
     localparam int unsigned SRC_SEL_W = (NUM_REQS > 1) ? $clog2(NUM_REQS) : 1;
     localparam int unsigned BANK_SEL_W = (NUM_BANKS > 1) ? $clog2(NUM_BANKS) : 1;
-    localparam int unsigned REQ_W = $bits(l1_l2_req_data_t);
-    localparam int unsigned RSP_W = $bits(l2_l1_rsp_data_t);
+    localparam int unsigned REQ_W = $bits(inter_tlb_req_data_t);
+    localparam int unsigned RSP_W = $bits(inter_tlb_rsp_data_t);
 
     // VPN -> bank. Constant 0 for a single bank; low-bit map as a placeholder for
     // multi-bank (replace with an XOR-fold over page-size-invariant bits).
@@ -66,7 +66,7 @@ module l2_tlb_frontend
         assign l1_l2_if[i].req_ready      = src_req_ready[i];
 
         assign l1_l2_if[i].rsp_valid      = src_rsp_valid[i];
-        assign l1_l2_if[i].rsp_data       = l2_l1_rsp_data_t'(src_rsp_data[i]);
+        assign l1_l2_if[i].rsp_data       = inter_tlb_rsp_data_t'(src_rsp_data[i]);
         assign src_rsp_ready[i]           = l1_l2_if[i].rsp_ready;
 
         // Broadcast flush to every L1 (not request-matched). All PTWs carry the
@@ -113,7 +113,7 @@ module l2_tlb_frontend
     ptw_if bank_ptw[NUM_BANKS] ();
 
     for (genvar b = 0; b < NUM_BANKS; ++b) begin : g_banks
-        l2_l1_rsp_data_t bank_rsp_struct;
+        inter_tlb_rsp_data_t bank_rsp_struct;
 
         l2_tlb_bank #(
             .SRC_W   (SRC_SEL_W),
@@ -123,7 +123,7 @@ module l2_tlb_frontend
             .rstn_i     (rstn_i),
             .req_valid_i(bank_req_valid[b]),
             .req_ready_o(bank_req_ready[b]),
-            .req_data_i (l1_l2_req_data_t'(bank_req_data[b])),
+            .req_data_i (inter_tlb_req_data_t'(bank_req_data[b])),
             .req_src_i  (bank_src_id[b]),
             .rsp_valid_o(bank_rsp_valid[b]),
             .rsp_ready_i(bank_rsp_ready[b]),
