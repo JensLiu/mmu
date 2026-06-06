@@ -32,8 +32,8 @@ module l2_tlb_frontend
     input logic rstn_i, // System reset signal (active low).
 
     // L1-L2 TLB interface (one fire-once link per L1)
-    l1_l2_if.l2   l1_l2_if[NUM_REQS],
-    l2_ptw_if.tlb ptw_if  [NUM_PTWS]
+    inter_tlb_if.slave   l1_l2_if[NUM_REQS],
+    ptw_if.master        ptw_if  [NUM_PTWS]
 );
 
     localparam int unsigned SRC_SEL_W = (NUM_REQS > 1) ? $clog2(NUM_REQS) : 1;
@@ -110,8 +110,7 @@ module l2_tlb_frontend
     logic [NUM_BANKS-1:0][    RSP_W-1:0] bank_rsp_data;
     logic [NUM_BANKS-1:0][SRC_SEL_W-1:0] bank_rsp_src;  // threaded src id -> rsp sel_in
 
-    // Per-bank PTW links, merged onto the shared ptw_if below.
-    l2_ptw_if bank_ptw[NUM_BANKS] ();
+    ptw_if bank_ptw[NUM_BANKS] ();
 
     for (genvar b = 0; b < NUM_BANKS; ++b) begin : g_banks
         l2_l1_rsp_data_t bank_rsp_struct;
@@ -136,7 +135,6 @@ module l2_tlb_frontend
         assign bank_rsp_data[b] = bank_rsp_struct;
     end
 
-    // PTW merge.
     ptw_scheduler #(
         .NUM_BANKS(NUM_BANKS),
         .NUM_PTWS (NUM_PTWS)

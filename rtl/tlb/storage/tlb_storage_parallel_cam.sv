@@ -1,5 +1,4 @@
-/*
- * Copyright 2023 BSC*
+/* Copyright 2023 BSC*
  * *Barcelona Supercomputing Center (BSC)
  *
  * SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
@@ -20,16 +19,36 @@
 
 `IGNORE_WARNINGS_BEGIN
 
-module tlb_storage
-    import mmu_pkg::*;
+module tlb_storage_parallel_cam
 #(
+    localparam int unsigned LEVEL_W = mmu_pkg::LEVEL_BITS,
+    localparam int unsigned ASID_W  = mmu_pkg::ASID_SIZE,
+    localparam int unsigned VPN_W   = mmu_pkg::VPN_SIZE,
     parameter int unsigned NUM_READ_PORTS = 1,
-    parameter int unsigned TLB_ENTRIES
+    parameter int unsigned NUM_TLB_ENTRIES
 ) (
-    input logic clk_i,  // System clock signal.
-    input logic rstn_i, // System reset signal (active low).
+    input logic clk_i,
+    input logic rstn_i,
 
-    tlb_storage_if.slave tlb_storage_if
+    // Read (combinational lookup)
+    input  logic                  read_valid_i,
+    output logic                  read_ready_o,
+    output logic                  read_is_hit_o,
+    input  logic [ ASID_SIZE-1:0] read_asid_i,
+    input  logic [  VPN_SIZE-1:0] read_vpn_i,
+    output logic [LEVEL_SIZE-1:0] read_level_o,
+    output mmu_pkg::tlb_entry_t            read_entry_o,
+
+    // Write
+    input  logic                  write_valid_i,
+    output logic                  write_ready_o,
+    input  logic [  VPN_SIZE-1:0] write_vpn_i,
+    input  logic [ ASID_SIZE-1:0] write_asid_i,
+    input  mmu_pkg::tlb_entry_t            write_entry_i,
+
+    // Clear (flush all valid entries)
+    input  logic                  clear_valid_i,
+    output logic                  clear_ready_o
 );
 
     localparam int unsigned TLB_IDX_SIZE = $clog2(TLB_ENTRIES);
@@ -112,8 +131,8 @@ module tlb_storage
         invalid_entry_found = 1'b0;
         invalid_entry_idx   = '0;
         for (int i = 0; i < TLB_ENTRIES; i++) begin
-            // NOTE: difference between nempty and valid — pick first invalid slot.
-            if (!invalid_entry_found && !tlb_entries[i].nempty) begin
+            // Pick first invalid slot.
+            if (!invalid_entry_found && !tlb_entries[i].valid) begin
                 invalid_entry_idx   = trunc_tlb_idx_size($unsigned(i));
                 invalid_entry_found = 1'b1;
             end

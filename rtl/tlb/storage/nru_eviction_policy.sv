@@ -1,4 +1,4 @@
-module eviction_policy
+module nru_eviction_policy
     import mmu_pkg::*;
 #(
     parameter int unsigned NUM_ENTRIES,

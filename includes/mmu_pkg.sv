@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 BSC*
+ * Copyright 2025 BSC*
  * *Barcelona Supercomputing Center (BSC)
  *
  * SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
@@ -112,142 +112,93 @@ package mmu_pkg;
     // ---------------------------------------------------------
 
     typedef struct packed {
-        logic ur;  // User read permission.
-        logic uw;  // User write permission.
-        logic ux;  // User execute permission.
-        logic sr;  // Supervisor read permission.
-        logic sw;  // Supervisor write permission.
-        logic sx;  // Supervisor execute permission.
+        logic ur;
+        logic uw;
+        logic ux;
+        logic sr;
+        logic sw;
+        logic sx;
     } tlb_entry_permissions_t;  // TLB page entry permissions.
 
     typedef struct packed {
-        logic [VPN_SIZE-1:0] vpn;  // Virtual page number.
-        logic [ASID_SIZE-1:0] asid;  // Address space identifier.
-        logic [PPN_SIZE-1:0] ppn;  // Physical page number.
-        logic [1:0]          level;  // Page entry size: 2'b00 (1 GiB Page), 2'b01 (2 MiB Page), 2'b10 (4 KiB Page).
-        logic dirty;  // The page entry is set as dirty.
-        logic access;  // The page entry has been accessed.
-        tlb_entry_permissions_t perms;  // TLB page entry permissions
-        // The tlb entry is valid, set to 1 when the PTW sends a translation response without errors.
-        logic valid;
-        // The tlb entry is not empty, when the PTW sends a translation response that we don't have to ignore, it is set to 1.
-        logic nempty;
-    } tlb_entry_t;  // TLB page entry.
+        logic [VPN_SIZE-1:0]    vpn;
+        logic [ASID_SIZE-1:0]   asid;
+        logic [PPN_SIZE-1:0]    ppn;
+        logic [1:0]             level;
+        logic                   dirty;
+        logic access;
+        tlb_entry_permissions_t perms;
+        logic                   valid;
+    } tlb_entry_t;
 
     // ---------------------------------------------------------
     //  Core-TLB communication
     // ---------------------------------------------------------
-    // Core-TLB request
     typedef struct packed {
-        logic valid;  // Translation request valid.
-        logic [ASID_SIZE-1:0] asid;  // Address space identifier.
-        logic [VPN_SIZE:0] vpn;  // Virtual page number.
-        logic                 passthrough;  // Virtual address directly corresponds to physical address, for direct assignment between a virtual machine and the physical device.
-        logic instruction;  // The translation request is for a instruction fetch address.
-        logic store;  // The translation request is for a store address.
-    } core_tlb_req_t;  // Translation request.
+        logic                 valid;
+        logic [ASID_SIZE-1:0] asid;
+        logic [VPN_SIZE:0]    vpn;
+        logic                 passthrough;
+        logic                 instruction;
+        logic                 store;
+    } core_tlb_req_t;
 
     typedef struct packed {
-        core_tlb_req_t req;  // Translation request.
-        logic [1:0]     priv_lvl;       // Privilege level of the translation: 2'b00 (User), 2'b01 (Supervisor), 2'b11 (Machine).
-        logic vm_enable;  // Memory virtualization is active.
-    } core_tlb_comm_t;  // Communication from translation requester to TLB.
+        core_tlb_req_t req;
+        logic [1:0]    priv_lvl;
+        logic          vm_enable;
+    } core_tlb_comm_t;
 
     typedef struct packed {
-        logic load;   // Load operation.
-        logic store;  // Store operation.
-        logic fetch;  // Fetch operation.
+        logic load;
+        logic store;
+        logic fetch;
     } tlb_ex_t;  // Exception origin.
 
-    // TLB-Core response
     typedef struct packed {
-        logic                miss;      // If the translation request missed set to 1 Otherwise, the rest of the signals have valid information of the response.
-        logic [PPN_SIZE-1:0] ppn;  // Physical page number.
-        tlb_ex_t xcpt;  // Exceptions produced by the requests.
-        logic [7:0] hit_idx;  // CAM hit index of the translation request.
-    } tlb_core_resp_t;  // Translation response.
+        logic                miss;
+        logic [PPN_SIZE-1:0] ppn;
+        tlb_ex_t             xcpt;
+        logic [7:0]          hit_idx;
+    } tlb_core_resp_t;
 
-    typedef struct packed {
-        // tlb_ready is handled by the internal TLB miss arbitor
-        // The core can send a translation request at any time,
-        // but on TLB miss, the TLB will only make ONE PTW request at a time
-        // During a TLB miss, the core shuold keep the translation request valid until it becomes a hit
-        // logic            tlb_ready;     // The tlb is ready to accept a translation request. If 0 it shouldn't receive any translation request.
-        tlb_core_resp_t resp;  // Translation response.
-    } tlb_core_comm_t;  // Communication from TLB to translation requester.
+    typedef struct packed {tlb_core_resp_t resp;} tlb_core_comm_t;
 
 
     // ---------------------------------------------------------
     //  L1-L2 TLB communication
     // ---------------------------------------------------------
-    // Request payload only - validity is carried by the handshake (l1_l2_if.req_valid),
-    // or by l1_l2_comm_t.valid on the held-valid struct path.
     typedef struct packed {
-        logic [VPN_SIZE-1:0] vpn;  // Virtual page number.
-        logic [ASID_SIZE-1:0] asid;  // Address space identifier.
-        logic [1:0]  prv;      // Privilege level of the translation: 2'b00 (User), 2'b01 (Supervisor), 2'b11 (Machine).
-        logic store_hit;  // should write to memory (from L1's perspective)
-        logic store;  // Store operation.
-        logic fetch;  // Fetch operation.
-    } l1_l2_req_data_t;  // Translation request of the TLB to the PTW.
+        logic [VPN_SIZE-1:0]  vpn;
+        logic [ASID_SIZE-1:0] asid;
+        logic [1:0]           prv;
+        logic                 set_dirty_bit;
+    } inter_tlb_req_data_t;
 
-    typedef l1_l2_req_data_t l1_l2_req_t;  // alias: held-valid L1->L2 request payload
     typedef struct packed {
-        logic        valid;  // Held-valid request qualifier.
-        l1_l2_req_t  req;
-    } l1_l2_comm_t;  // Communication from L1 TLB to L2 TLB
-
-    // Response payload only - validity is carried by the handshake (l1_l2_if.rsp_valid),
-    // or by l2_l1_comm_t.resp_valid on the held-valid struct path.
-    typedef struct packed {
-        logic   error; // An error has ocurred with the translation request. Only check if the response is valid.
+        logic       error;
         tlb_entry_t tlb_entry;
-    } l2_l1_rsp_data_t;
+    } inter_tlb_rsp_data_t;
 
-    typedef l2_l1_rsp_data_t l2_l1_resp_t;  // alias: held-valid L2->L1 response payload
+    // Legacy Interface
+    typedef inter_tlb_req_data_t l1_l2_req_data_t;  // alias: pre-rename request payload
+    typedef inter_tlb_rsp_data_t l2_l1_rsp_data_t;  // alias: pre-rename response payload
+    typedef inter_tlb_req_data_t l1_l2_req_t;
     typedef struct packed {
-        logic          resp_valid;  // Held-valid response qualifier.
-        l2_l1_resp_t   resp;  // PTW response to TLB translation request.
-        logic          invalidate_tlb;  // Signal to flush all entries in TLB and don't allocate in-progress transactions with the PTW.
+        logic       valid;
+        l1_l2_req_t req;
+    } l1_l2_comm_t;
+
+
+    typedef inter_tlb_rsp_data_t l2_l1_resp_t;  // alias: held-valid L2->L1 response payload
+    typedef struct packed {
+        logic        resp_valid;
+        l2_l1_resp_t resp;
+        logic        invalidate_tlb;
     } l2_l1_comm_t;
 
     // ---------------------------------------------------------
     // L2 TLB - PTW communication
-    // ---------------------------------------------------------
-    typedef struct packed {
-        logic valid;  // Translation request valid.
-        logic [VPN_SIZE-1:0] vpn;  // Virtual page number.
-        logic [ASID_SIZE-1:0] asid;  // Address space identifier.
-        logic [1:0]           prv;      // Privilege level of the translation: 2'b00 (User), 2'b01 (Supervisor), 2'b11 (Machine).
-        logic store;  // Store operation.
-        logic fetch;  // Fetch operation.
-    } l2_ptw_req_t;
-
-    typedef struct packed {
-        l2_ptw_req_t req;  // Translation request of the TLB to the PTW.
-    } l2_ptw_comm_t;
-
-    typedef struct packed {
-        logic valid;  // Translation response valid.
-        logic                      error; // An error has ocurred with the translation request. Only check if the response is valid.
-        pte_t pte;  // Page table entry.
-        logic [LEVEL_BITS - 1:0] level;  // Page entry size: 2'b00 (1 GiB Page), 2'b01 (2 MiB Page), 2'b10 (4 KiB Page).
-    } ptw_l2_resp_t;
-
-    typedef struct packed {
-        ptw_l2_resp_t resp;  // PTW response to TLB translation request.
-        logic          invalidate_tlb;  // Signal to flush all entries in TLB and don't allocate in-progress transactions with the PTW.
-        logic          ptw_ready;  // PTW is idle and ready to accept a new request.
-    } ptw_l2_comm_t;
-
-    typedef l2_ptw_req_t tlb_ptw_req_t;
-    typedef l2_ptw_comm_t tlb_ptw_comm_t;
-    typedef ptw_l2_comm_t ptw_tlb_comm_t;
-
-    // ---------------------------------------------------------
-    // L2 TLB <-> PTW: unified ready/valid payloads (carry a tag).
-    // Used by l2_ptw_if; the legacy *_comm_t types above are kept for the
-    // (uninstantiated) legacy TLB/PTW modules.
     // ---------------------------------------------------------
     // The PTW echoes this tag opaquely. It has two owners with disjoint fields:
     //   .slot - the requesting bank's MSHR slot id (bank-private; routes the fill)
@@ -256,20 +207,22 @@ package mmu_pkg;
     // Widths are design maxima (>= any bank's MSHR_TAG_W / clog2(NUM_BANKS)).
     parameter PTW_TAG_SLOT_W = 4;  // up to 16 MSHR slots per bank
     parameter PTW_TAG_BANK_W = 4;  // up to 16 banks
-    parameter PTW_TAG_W      = PTW_TAG_BANK_W + PTW_TAG_SLOT_W;
+    parameter PTW_TAG_TLB_SET_W = 8;  // up to 256 TLB sets
+    parameter PTW_TAG_W = PTW_TAG_BANK_W + PTW_TAG_SLOT_W + PTW_TAG_TLB_SET_W;
 
     typedef struct packed {
-        logic [PTW_TAG_BANK_W-1:0] bank;  // owned by the scheduler
-        logic [PTW_TAG_SLOT_W-1:0] slot;  // owned by the bank's MSHR
+        logic [PTW_TAG_BANK_W-1:0]    bank;       // owned by the scheduler
+        logic [PTW_TAG_SLOT_W-1:0]    mshr_slot;  // owned by the bank's MSHR
+        logic [PTW_TAG_TLB_SET_W-1:0] tlb_set;    // owned by the TLB
     } ptw_tag_t;
 
     typedef struct packed {
-        logic [VPN_SIZE-1:0]   vpn;
-        logic [ASID_SIZE-1:0]  asid;
-        logic [1:0]            prv;
-        logic                  store;
-        logic                  fetch;
-        ptw_tag_t              tag;
+        logic [VPN_SIZE-1:0]  vpn;
+        logic [ASID_SIZE-1:0] asid;
+        logic [1:0]           prv;
+        logic                 store;
+        logic                 fetch;
+        ptw_tag_t             tag;
     } ptw_req_data_t;
 
     typedef struct packed {
@@ -279,25 +232,18 @@ package mmu_pkg;
         ptw_tag_t              tag;
     } ptw_rsp_data_t;
 
-    ////////////////////////////////
-    //
-    //  PTW
-    //
-    ///////////////////////////////
-    //
+    // ---------------------------------------------------------
+    // PTW Internal
+    // ---------------------------------------------------------
     typedef struct packed {
         logic                valid;
         logic [SIZE_VADDR:0] tags;
         logic [PPN_SIZE-1:0] data;
     } ptw_ptecache_entry_t;
 
-    ////////////////////////////////
-    //
-    //  PTW Communications
-    //
-    ///////////////////////////////
-
-    // PTW-DMEM request
+    // ---------------------------------------------------------
+    // PTW-DRAM
+    // ---------------------------------------------------------
     typedef struct packed {
         logic                valid;
         logic [SIZE_VADDR:0] addr;
@@ -310,7 +256,6 @@ package mmu_pkg;
 
     typedef struct packed {ptw_dmem_req_t req;} ptw_dmem_comm_t;
 
-    // PTW-DMEM response
     typedef struct packed {
         logic                valid;
         logic [SIZE_VADDR:0] addr;

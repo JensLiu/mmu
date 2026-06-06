@@ -43,7 +43,7 @@ module l1_l2_adapter
     output l2_l1_comm_t l2_l1_comm_o,  // response to the L1
 
     // L2 side (fire-once handshake)
-    l1_l2_if.l1 ifc
+    inter_tlb_if.master ifc
 );
 
     logic sent_q;

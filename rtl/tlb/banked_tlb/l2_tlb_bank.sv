@@ -17,6 +17,7 @@
  * License for the specific language governing permissions and limitations
  * under the License.
  */
+
 // Non-blocking, MSHR-coalescing L2 TLB bank.
 //
 //  - Ingress: probe the store combinationally on the incoming request.
@@ -29,41 +30,44 @@
 //
 // The store is the correctness backstop and is written exactly once per slot,
 // on its terminal deliver (so each VPN appears at most once in the store).
+`IGNORE_WARNINGS_BEGIN
 module l2_tlb_bank
     import mmu_pkg::*;
 #(
-    parameter int unsigned SRC_W       = 1,  // = LOG2UP(NUM_SRCS)
-    parameter int unsigned NUM_SRCS    = 2,  // requesters served by this bank
-    parameter int unsigned TLB_ENTRIES = 8,
-    parameter int unsigned MSHR_SIZE   = 4
+    parameter int unsigned SRC_W        = 1,    // = LOG2UP(NUM_SRCS)
+    parameter int unsigned NUM_SRCS     = 2,    // requesters served by this bank
+    parameter int unsigned NUM_TLB_SETS = 128,
+    parameter int unsigned NUM_TLB_WAYS = 8,
+    parameter int unsigned MSHR_SIZE    = 4
 ) (
     input logic clk_i,
     input logic rstn_i,
 
-    // Request in (fire-once, from the request xbar output)
-    input  logic                        req_valid_i,
-    output logic                        req_ready_o,
-    input  l1_l2_req_data_t             req_data_i,
-    input  logic            [SRC_W-1:0] req_src_i,
+    // Request (slave)
+    input  logic                                     req_valid_i,
+    output logic                                     req_ready_o,
+    input  mmu_pkg::inter_tlb_req_data_t             req_data_i,
+    input  logic                         [SRC_W-1:0] req_src_i,
 
-    // Response out (fire-once, to the response xbar input)
-    output logic                        rsp_valid_o,
-    input  logic                        rsp_ready_i,
-    output l2_l1_rsp_data_t             rsp_data_o,
-    output logic            [SRC_W-1:0] rsp_src_o,
+    // Response (master)
+    output logic                                     rsp_valid_o,
+    input  logic                                     rsp_ready_i,
+    output mmu_pkg::inter_tlb_rsp_data_t             rsp_data_o,
+    output logic                         [SRC_W-1:0] rsp_src_o,
 
-    // PTW master (unified ready/valid)
-    l2_ptw_if.tlb ptw_if
+    // PTW (master)
+    ptw_if.master ptw_if
 );
 
-    localparam int unsigned TLB_IDX_SIZE = $clog2(TLB_ENTRIES);
+    localparam int unsigned TLB_SET_IDX_SIZE = $clog2(NUM_TLB_SETS);
+    localparam int unsigned TLB_WAY_IDX_SIZE = $clog2(NUM_TLB_WAYS);
     localparam int unsigned MSHR_TAG_W = (MSHR_SIZE > 1) ? $clog2(MSHR_SIZE) : 1;
 
     // -------------------------------------------------------------------------
     // pte_t -> payload / cache entry helpers
     // -------------------------------------------------------------------------
     /* verilator lint_off UNUSEDSIGNAL */
-    function automatic l2_l1_rsp_data_t rsp_from_pte(
+    function automatic inter_tlb_rsp_data_t rsp_from_pte(
         input pte_t pte, input logic [LEVEL_BITS-1:0] level, input logic error);
         rsp_from_pte                    = '0;
         rsp_from_pte.error              = error;
@@ -78,13 +82,12 @@ module l2_tlb_bank
         rsp_from_pte.tlb_entry.perms.sw = pte.w & ~pte.u & pte.v;
         rsp_from_pte.tlb_entry.perms.sx = pte.x & ~pte.u & pte.v;
         rsp_from_pte.tlb_entry.valid    = !error;
-        rsp_from_pte.tlb_entry.nempty   = 1'b1;
     endfunction
 
     function automatic tlb_entry_t entry_from_pte(
         input pte_t pte, input logic [LEVEL_BITS-1:0] level, input logic [VPN_SIZE-1:0] vpn,
         input logic [ASID_SIZE-1:0] asid);
-        l2_l1_rsp_data_t r = rsp_from_pte(pte, level, 1'b0);
+        inter_tlb_rsp_data_t r = rsp_from_pte(pte, level, 1'b0);
         entry_from_pte      = r.tlb_entry;
         entry_from_pte.vpn  = vpn;
         entry_from_pte.asid = asid;
@@ -92,39 +95,68 @@ module l2_tlb_bank
     /* verilator lint_on UNUSEDSIGNAL */
 
     // -------------------------------------------------------------------------
-    // Store (single read port - probed combinationally per request)
+    // Store
     // -------------------------------------------------------------------------
-    tlb_storage_if #(
-        .TLB_ENTRIES   (TLB_ENTRIES),
-        .NUM_READ_PORTS(1)
-    ) tlb_storage_if ();
+    wire  write_dirty_bit = req_data_i.set_dirty_bit;  // computed in the L1 (pte_perm_check)
+    logic tlb_read_valid;
+    assign tlb_read_valid = req_valid_i;
+    /* verilator lint_off UNUSEDSIGNAL */
+    logic tlb_read_ready, tlb_write_ready, tlb_clear_ready;
+    /* verilator lint_on UNUSEDSIGNAL */
+    logic                tlb_read_hit;
+    mmu_pkg::tlb_entry_t tlb_read_hit_entry;
 
-    tlb_storage #(
-        .NUM_READ_PORTS(1),
-        .TLB_ENTRIES   (TLB_ENTRIES)
-    ) storage (
-        .clk_i         (clk_i),
-        .rstn_i        (rstn_i),
-        .tlb_storage_if(tlb_storage_if)
+    tlb_storage_set_associative #(
+        .NUM_TLB_SETS(NUM_TLB_SETS),
+        .NUM_TLB_WAYS(NUM_TLB_WAYS)
+    ) tlb_storage (
+        .clk_i        (clk_i),
+        .rstn_i       (rstn_i),
+        // Read (slave)
+        .read_valid_i (req_valid_i),
+        .read_ready_o (tlb_read_ready),
+        .read_is_hit_o(tlb_read_hit),
+        .read_asid_i  (req_data_i.asid),
+        .read_vpn_i   (req_data_i.vpn),
+        `UNUSED_PIN(read_level_o),
+        .read_entry_o (tlb_read_hit_entry),
+        // Write (slave): update-in-place keeps one entry per VPN, so the dirty
+        // re-walk simply overwrites the resident clean entry (no clear needed).
+        .write_valid_i(deliver_fire && deliver_write_cache),
+        .write_ready_o(tlb_write_ready),
+        .write_vpn_i  (deliver_entry.vpn),
+        .write_asid_i (deliver_entry.asid),
+        .write_entry_i(deliver_entry),
+        // Clear (slave): flush-all on a TLB Invalidate broadcast.
+        .clear_valid_i(ptw_if.invalidate_tlb),
+        .clear_ready_o(tlb_clear_ready)
     );
 
-    assign tlb_storage_if.read_req[0].vpn  = req_data_i.vpn;
-    assign tlb_storage_if.read_req[0].asid = req_data_i.asid;
+    wire tlb_read_fire = tlb_read_valid && tlb_read_ready;
+    wire read_cam_hit = tlb_read_fire && tlb_read_hit;
+    // Dirty bit should NOT return until it's been written
+    // TODO: check if L2  dirty bit is set
+    wire read_effective_hit = read_cam_hit && !write_dirty_bit;
 
-    tlb_entry_t                    hit_entry;
-    logic       [TLB_IDX_SIZE-1:0] hit_idx;
-    assign hit_entry = tlb_storage_if.read_resp[0].hit_entry;
-    assign hit_idx   = tlb_storage_if.read_resp[0].hit_idx;
-
-    wire                   cam_hit = tlb_storage_if.read_resp[0].is_hit;
-    wire                   store_hit = req_data_i.store_hit;  // computed in the L1 (pte_perm_check)
-    wire                   eff_hit = cam_hit && store_hit;
+    // -------------------------------------------------------------------------
+    // Request acceptance
+    // -------------------------------------------------------------------------
+    always_comb begin
+        if (!rstn_i) begin
+            req_ready_o = 1'b0;
+        end else if (read_effective_hit) begin
+            // Read Hit: ask deliver engine to accept this hit
+            req_ready_o = deliver_engine_hit_ready;
+        end else begin
+            // Read Miss: ask MHSR to accept allocation
+            req_ready_o = allocate_ready;
+        end
+    end
 
     // -------------------------------------------------------------------------
     // MSHR
     // -------------------------------------------------------------------------
     logic                  allocate_ready;
-
     logic                  deliver_valid;
     logic                  deliver_ready;
     logic [  NUM_SRCS-1:0] deliver_cores;
@@ -134,9 +166,8 @@ module l2_tlb_bank
     logic [  VPN_SIZE-1:0] deliver_vpn;
     logic [ ASID_SIZE-1:0] deliver_asid;
     logic                  deliver_write_cache;
-
-    wire                   req_fire = req_valid_i && req_ready_o;
-    wire                   alloc_valid = req_valid_i && !eff_hit;  // miss (incl. store-to-clean)
+    wire                   deliver_fire = deliver_valid && deliver_ready;
+    wire                   alloc_valid = req_valid_i && !read_effective_hit;
 
     l2_tlb_mshr #(
         .MSHR_SIZE(MSHR_SIZE),
@@ -144,32 +175,30 @@ module l2_tlb_bank
     ) mshr (
         .clk_i                (clk_i),
         .rstn_i               (rstn_i),
-        // allocate
+        // Allocate (slave)
         .allocate_valid_i     (alloc_valid),
         .allocate_ready_o     (allocate_ready),
         .allocate_vpn_i       (req_data_i.vpn),
         .allocate_asid_i      (req_data_i.asid),
-        .allocate_set_dirty_i (req_data_i.store),
+        .allocate_set_dirty_i (req_data_i.set_dirty_bit),
         .allocate_prv_i       (req_data_i.prv),
-        .allocate_fetch_i     (req_data_i.fetch),
         .allocate_core_id_i   (req_src_i),
-        // issue
+        // PTW Issue (master)
         .issue_valid_o        (ptw_if.req_valid),
         .issue_ready_i        (ptw_if.req_ready),
-        .issue_id_o           (ptw_if.req_data.tag.slot[MSHR_TAG_W-1:0]),
+        .issue_id_o           (ptw_if.req_data.tag.mshr_slot[MSHR_TAG_W-1:0]),
         .issue_vpn_o          (ptw_if.req_data.vpn),
         .issue_asid_o         (ptw_if.req_data.asid),
         .issue_set_dirty_o    (ptw_if.req_data.store),
         .issue_prv_o          (ptw_if.req_data.prv),
-        .issue_fetch_o        (ptw_if.req_data.fetch),
-        // fill
+        // PTW Fill (slave)
         .fill_valid_i         (ptw_if.rsp_valid),
         .fill_ready_o         (ptw_if.rsp_ready),
-        .fill_id_i            (MSHR_TAG_W'(ptw_if.rsp_data.tag.slot)),
+        .fill_id_i            (MSHR_TAG_W'(ptw_if.rsp_data.tag.mshr_slot)),
         .fill_pte_i           (ptw_if.rsp_data.pte),
         .fill_level_i         (ptw_if.rsp_data.level),
         .fill_error_i         (ptw_if.rsp_data.error),
-        // deliver
+        // Deliver (master)
         .deliver_valid_o      (deliver_valid),
         .deliver_ready_i      (deliver_ready),
         .deliver_cores_o      (deliver_cores),
@@ -182,12 +211,10 @@ module l2_tlb_bank
         `UNUSED_PIN(pending_entries_o)
     );
 
-    // The bank owns only tag.slot (issue_id_o drives its low bits above).  The
-    // bank field is composed by the PTW scheduler, so tie it off here; zero the
-    // unused high slot bits if the MSHR is smaller than the slot field.
-    assign ptw_if.req_data.tag.bank = '0;
+    assign ptw_if.req_data.tag.bank = '0;  // Filled later by the scheduler
     if (PTW_TAG_SLOT_W > MSHR_TAG_W) begin : g_slot_hi
-        assign ptw_if.req_data.tag.slot[PTW_TAG_SLOT_W-1:MSHR_TAG_W] = '0;
+        // zero out the unused high slot bits if the MSHR is smaller than the slot field.
+        assign ptw_if.req_data.tag.mshr_slot[PTW_TAG_SLOT_W-1:MSHR_TAG_W] = '0;
     end
 
     // -------------------------------------------------------------------------
@@ -195,102 +222,41 @@ module l2_tlb_bank
     // response port, one src/cycle.  Payload-opaque - it receives finished rsp
     // structs (PTE expansion + the cache write stay here in the bank).
     // -------------------------------------------------------------------------
-    l2_l1_rsp_data_t deliver_rsp, hit_rsp;
+    // Entry for current TLB update
+    tlb_entry_t deliver_entry;
+    assign deliver_entry = entry_from_pte(deliver_pte, deliver_level, deliver_vpn, deliver_asid);
+    // Response for upstream TLB update
+    inter_tlb_rsp_data_t deliver_rsp;  // MSHR Deliver Response
     assign deliver_rsp = rsp_from_pte(deliver_pte, deliver_level, deliver_error);
+    inter_tlb_rsp_data_t hit_rsp;  // TLB Hit Response
     always_comb begin
         hit_rsp           = '0;
-        hit_rsp.tlb_entry = hit_entry;
+        hit_rsp.tlb_entry = tlb_read_hit_entry;
     end
 
-    logic eng_hit_ready;
+    logic deliver_engine_hit_ready;  // Hit/Deliver Arbitration (request ready back pressure)
     l2_tlb_bank_response_engine #(
         .NUM_CORES(NUM_SRCS)
     ) resp_engine (
         .clk_i               (clk_i),
         .rstn_i              (rstn_i),
-        // MSHR deliver -> engine
+        // MSHR Deliver (slave)
         .mshr_deliver_valid_i(deliver_valid),
         .mshr_deliver_ready_o(deliver_ready),
         .mshr_deliver_cores_i(deliver_cores),
         .mshr_deliver_rsp_i  (deliver_rsp),
-        // direct hit -> engine
-        .tlb_hit_valid_i     (req_valid_i && eff_hit),
-        .tlb_hit_ready_o     (eng_hit_ready),
+        // TLB Hit (slave)
+        .tlb_hit_valid_i     (req_valid_i && read_effective_hit),
+        .tlb_hit_ready_o     (deliver_engine_hit_ready),
         .tlb_hit_core_i      (req_src_i),
-        .tlb_hit_rep_i       (hit_rsp),
-        // engine -> bank response port
+        .tlb_hit_rsp_i       (hit_rsp),
+        // Response (master)
         .rsp_valid_o         (rsp_valid_o),
         .rsp_ready_i         (rsp_ready_i),
         .rsp_data_o          (rsp_data_o),
         .rsp_src_o           (rsp_src_o)
     );
 
-    // -------------------------------------------------------------------------
-    // Request acceptance
-    //   eff_hit : the engine accepts the hit (deliver has priority internally)
-    //   miss    : the MSHR accepts (its ready drops on a deliver snapshot)
-    // -------------------------------------------------------------------------
-    always_comb begin
-        if (!rstn_i) req_ready_o = 1'b0;
-        else if (eff_hit) req_ready_o = eng_hit_ready;
-        else req_ready_o = allocate_ready;
-    end
-
-    // -------------------------------------------------------------------------
-    // Eviction (NRU)
-    // -------------------------------------------------------------------------
-    logic                    acc_hit[1];
-    logic [TLB_IDX_SIZE-1:0] acc_idx[1];
-    assign acc_hit[0] = req_fire && cam_hit;
-    assign acc_idx[0] = hit_idx;
-
-    logic                    write_tlb;
-    logic [TLB_IDX_SIZE-1:0] eviction_idx;
-    eviction_policy #(
-        .NUM_ENTRIES  (TLB_ENTRIES),
-        .NUM_HIT_PORTS(1)
-    ) eviction_policy (
-        .clk_i                  (clk_i),
-        .rstn_i                 (rstn_i),
-        .access_hit_i           (acc_hit),
-        .access_idx_i           (acc_idx),
-        .write_event_i          (write_tlb),
-        .write_idx_i            (eviction_idx),
-        .tlb_has_invalid_entry_i(tlb_storage_if.tlb_has_invalid_entry),
-        .tlb_invalid_entry_idx_i(tlb_storage_if.tlb_invalid_entry_idx),
-        .evict_idx_o            (eviction_idx)
-    );
-
-    // -------------------------------------------------------------------------
-    // Store updates: write on a terminal deliver; clear on invalidate or on a
-    // store-to-clean hit (drop the clean entry so the dirty walk re-fills it).
-    // (write and store-to-clean clear can never coincide: a miss cannot fire on
-    //  a deliver_fire cycle.  TODO: invalidate does not squash in-flight MSHR.)
-    // -------------------------------------------------------------------------
-    wire deliver_fire = deliver_valid && deliver_ready;  // engine accepted the snapshot
-    assign write_tlb = deliver_fire && deliver_write_cache;
-
-    logic [TLB_ENTRIES-1:0] clear_mask;
-    logic                   clear_tlb;
-    always_comb begin
-        clear_tlb  = 1'b0;
-        clear_mask = '0;
-        if (ptw_if.invalidate_tlb) begin
-            clear_tlb  = 1'b1;
-            clear_mask = {TLB_ENTRIES{1'b1}};
-        end else if (req_fire && cam_hit && !store_hit) begin
-            clear_tlb           = 1'b1;
-            clear_mask[hit_idx] = 1'b1;
-        end
-    end
-
-    tlb_entry_t deliver_entry;
-    assign deliver_entry = entry_from_pte(deliver_pte, deliver_level, deliver_vpn, deliver_asid);
-
-    assign tlb_storage_if.update_req.write_tlb = write_tlb;
-    assign tlb_storage_if.update_req.write_idx = eviction_idx;
-    assign tlb_storage_if.update_req.write_entry = deliver_entry;
-    assign tlb_storage_if.clear_req.clear_tlb = clear_tlb;
-    assign tlb_storage_if.clear_req.clear_mask = clear_mask;
 
 endmodule
+`IGNORE_WARNINGS_END

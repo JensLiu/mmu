@@ -30,8 +30,8 @@ module ptw_scheduler
     input logic clk_i,
     input logic rstn_i,
 
-    l2_ptw_if.ptw bank_reqs[NUM_BANKS],
-    l2_ptw_if.tlb ptw_reqs [ NUM_PTWS]
+    ptw_if.slave  bank_reqs[NUM_BANKS],
+    ptw_if.master ptw_reqs [ NUM_PTWS]
 );
     localparam int unsigned BANK_ID_W = (NUM_BANKS > 1) ? $clog2(NUM_BANKS) : 1;
     localparam int unsigned PTW_ID_W = (NUM_PTWS > 1) ? $clog2(NUM_PTWS) : 1;

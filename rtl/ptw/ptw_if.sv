@@ -4,7 +4,7 @@
 //   rsp : PTW -> TLB   (walk result; echoes the tag)
 //   invalidate_tlb : broadcast flush PTW -> TLB (sideband, not request-matched)
 // -----------------------------------------------------------------------------
-interface l2_ptw_if;
+interface ptw_if;
 
     logic                    req_valid, req_ready;
     mmu_pkg::ptw_req_data_t  req_data;
@@ -15,7 +15,7 @@ interface l2_ptw_if;
     logic                    invalidate_tlb;
 
     // TLB side: drives requests, consumes responses.
-    modport tlb (
+    modport master (
         output req_valid,
         output req_data,
         input  req_ready,
@@ -28,7 +28,7 @@ interface l2_ptw_if;
     );
 
     // PTW side: consumes requests, drives responses + the flush broadcast.
-    modport ptw (
+    modport slave (
         input  req_valid,
         input  req_data,
         output req_ready,

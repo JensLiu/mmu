@@ -29,7 +29,7 @@ module ptw
     input logic rstn_i,
 
     // TLB request-response (unified ready/valid)
-    l2_ptw_if.ptw ptw_if,
+    ptw_if.slave ptw_if,
 
     // dmem request-response
     input  dmem_ptw_comm_t dmem_ptw_comm_i,

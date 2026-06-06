@@ -88,12 +88,12 @@ module bsc_mmu
     // and the PTW pool (ptw side).  NUM_PTWS>1 also needs a dmem arbiter, so it
     // stays 1 until that is built.
     localparam int unsigned NUM_PTWS = 1;
-    l2_ptw_if ptw_link[NUM_PTWS] ();
+    ptw_if ptw_link[NUM_PTWS] ();
 
     // L1 <-> L2 fire-once links (interleaved: [i*2] = iTLB, [i*2+1] = dTLB).
     // Each L1 keeps its held-valid struct interface; an adapter bridges it to
     // the fire-once handshake the decoupled L2 frontend expects.
-    l1_l2_if l1_l2_links[2 * NUM_CORES] ();
+    inter_tlb_if l1_l2_links[2 * NUM_CORES] ();
 
     for (genvar i = 0; i < NUM_CORES; ++i) begin : g_l1_l2_adapters
         l1_l2_adapter itlb_adapter (
@@ -117,7 +117,7 @@ module bsc_mmu
     // The bank's CAM is single-ported - no NUM_CORES-wide parallel lookup.
     l2_tlb_frontend #(
         .NUM_REQS   (2 * NUM_CORES),
-        .NUM_BANKS  (1),
+        .NUM_BANKS  (4),
         .NUM_PTWS   (NUM_PTWS),
         .TLB_ENTRIES(L2_TLB_ENTRIES)
     ) l2_tlb_frontend_inst (

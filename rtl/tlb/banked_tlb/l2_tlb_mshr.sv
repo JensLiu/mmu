@@ -56,7 +56,6 @@ module l2_tlb_mshr #(
     input  logic [   ASID_SIZE-1:0] allocate_asid_i,
     input  logic                    allocate_set_dirty_i,  // store (needs dirty)
     input  logic [             1:0] allocate_prv_i,
-    input  logic                    allocate_fetch_i,
     input  logic [CORE_ID_SIZE-1:0] allocate_core_id_i,
 
     // Issue (to PTW)
@@ -67,7 +66,6 @@ module l2_tlb_mshr #(
     output logic [ASID_SIZE-1:0] issue_asid_o,
     output logic                 issue_set_dirty_o,
     output logic [          1:0] issue_prv_o,
-    output logic                 issue_fetch_o,
 
     // Fill (from PTW, keyed by tag)
     input  logic                           fill_valid_i,
@@ -111,7 +109,6 @@ module l2_tlb_mshr #(
         logic [ASID_SIZE-1:0]  asid;
         logic                  set_dirty;
         logic [1:0]            prv;
-        logic                  fetch;
         logic                  dirty_poison;
         logic [NUM_CORES-1:0]  pending_cores;  // delivered this pass
         logic [NUM_CORES-1:0]  dirty_cores;    // held stores, become the next pass
@@ -182,7 +179,6 @@ module l2_tlb_mshr #(
     assign issue_asid_o      = mshr_entries[issue_id].asid;
     assign issue_set_dirty_o = mshr_entries[issue_id].set_dirty;
     assign issue_prv_o       = mshr_entries[issue_id].prv;
-    assign issue_fetch_o     = mshr_entries[issue_id].fetch;
 
     wire issue_fire = issue_valid_o && issue_ready_i;
 
@@ -293,7 +289,6 @@ module l2_tlb_mshr #(
                 mshr_entries[alloc_id].asid         <= allocate_asid_i;
                 mshr_entries[alloc_id].set_dirty    <= allocate_set_dirty_i;
                 mshr_entries[alloc_id].prv          <= allocate_prv_i;
-                mshr_entries[alloc_id].fetch        <= allocate_fetch_i;
                 mshr_entries[alloc_id].dirty_poison <= 1'b0;
                 mshr_entries[alloc_id].dirty_cores  <= '0;
                 for (int j = 0; j < NUM_CORES; j++)
@@ -311,6 +306,7 @@ module l2_tlb_mshr #(
             if (fill_fire) begin
                 mshr_entries[fill_id_i].pte   <= fill_pte_i;
                 mshr_entries[fill_id_i].level <= fill_level_i;
+                assert (!fill_error_i);
                 mshr_entries[fill_id_i].error <= fill_error_i;
                 if (mshr_entries[fill_id_i].state == ES_CLEAN_PENDING_FILL)
                     mshr_entries[fill_id_i].state <= ES_CLEAN_PENDING_DELIVER;
