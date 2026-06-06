@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 BSC*
+ * Copyright 2026 BSC*
  * *Barcelona Supercomputing Center (BSC)
  *
  * SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
@@ -18,22 +18,20 @@
  * under the License.
  */
 
-`IGNORE_WARNINGS_BEGIN
 
 module l2_tlb_frontend
     import mmu_pkg::*;
 #(
-    parameter int unsigned NUM_REQS    = 1,
-    parameter int unsigned NUM_BANKS   = 1,
-    parameter int unsigned NUM_PTWS    = 1,
-    parameter int unsigned TLB_ENTRIES = 8
+    parameter int unsigned NUM_REQS  = 1,
+    parameter int unsigned NUM_BANKS = 1,
+    parameter int unsigned NUM_PTWS  = 1
 ) (
     input logic clk_i,  // System clock signal.
     input logic rstn_i, // System reset signal (active low).
 
     // L1-L2 TLB interface (one fire-once link per L1)
-    inter_tlb_if.slave   l1_l2_if[NUM_REQS],
-    ptw_if.master        ptw_if  [NUM_PTWS]
+    inter_tlb_if.slave l1_l2_if[NUM_REQS],
+    ptw_if.master      ptw_if  [NUM_PTWS]
 );
 
     localparam int unsigned SRC_SEL_W = (NUM_REQS > 1) ? $clog2(NUM_REQS) : 1;
@@ -43,9 +41,11 @@ module l2_tlb_frontend
 
     // VPN -> bank. Constant 0 for a single bank; low-bit map as a placeholder for
     // multi-bank (replace with an XOR-fold over page-size-invariant bits).
+    /* verilator lint_off UNUSEDSIGNAL */
     function automatic logic [BANK_SEL_W-1:0] bank_sel(input logic [VPN_SIZE-1:0] vpn);
         bank_sel = (NUM_BANKS == 1) ? '0 : vpn[BANK_SEL_W-1:0];
     endfunction
+    /* verilator lint_on UNUSEDSIGNAL */
 
     // -------------------------------------------------------------------------
     // Source-side packing (interface -> flat buses)
@@ -139,10 +139,10 @@ module l2_tlb_frontend
         .NUM_BANKS(NUM_BANKS),
         .NUM_PTWS (NUM_PTWS)
     ) ptw_scheduler (
-        .clk_i(clk_i),
-        .rstn_i(rstn_i),
+        .clk_i    (clk_i),
+        .rstn_i   (rstn_i),
         .bank_reqs(bank_ptw),
-        .ptw_reqs(ptw_if)
+        .ptw_reqs (ptw_if)
     );
 
     // -------------------------------------------------------------------------
@@ -169,5 +169,3 @@ module l2_tlb_frontend
     );
 
 endmodule
-
-`IGNORE_WARNINGS_END

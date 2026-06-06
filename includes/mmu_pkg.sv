@@ -137,7 +137,7 @@ package mmu_pkg;
     typedef struct packed {
         logic                 valid;
         logic [ASID_SIZE-1:0] asid;
-        logic [VPN_SIZE:0]    vpn;
+        logic [VPN_SIZE-1:0]  vpn;
         logic                 passthrough;
         logic                 instruction;
         logic                 store;
@@ -147,6 +147,7 @@ package mmu_pkg;
         core_tlb_req_t req;
         logic [1:0]    priv_lvl;
         logic          vm_enable;
+        logic          resp_ready;  // requester ready to accept the response (backpressure)
     } core_tlb_comm_t;
 
     typedef struct packed {
@@ -156,6 +157,7 @@ package mmu_pkg;
     } tlb_ex_t;  // Exception origin.
 
     typedef struct packed {
+        logic                valid;  // a definitive answer is available (hit translation or fault)
         logic                miss;
         logic [PPN_SIZE-1:0] ppn;
         tlb_ex_t             xcpt;
@@ -163,6 +165,23 @@ package mmu_pkg;
     } tlb_core_resp_t;
 
     typedef struct packed {tlb_core_resp_t resp;} tlb_core_comm_t;
+
+    // Handshake payloads for core_tlb_if (valid/ready lives on the interface, so
+    // these carry no valid bit). priv_lvl/vm_enable are per-request context.
+    typedef struct packed {
+        logic [ASID_SIZE-1:0] asid;
+        logic [ VPN_SIZE-1:0] vpn;
+        logic                 instruction;
+        logic                 store;
+        logic [1:0]           priv_lvl;
+        logic                 vm_enable;  // per-request; clear it to bypass translation
+    } core_tlb_req_data_t;
+
+    typedef struct packed {
+        logic [PPN_SIZE-1:0] ppn;
+        tlb_ex_t             xcpt;
+        logic [7:0]          hit_idx;
+    } core_tlb_rsp_data_t;
 
 
     // ---------------------------------------------------------

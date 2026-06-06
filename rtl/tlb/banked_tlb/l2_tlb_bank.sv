@@ -30,7 +30,6 @@
 //
 // The store is the correctness backstop and is written exactly once per slot,
 // on its terminal deliver (so each VPN appears at most once in the store).
-`IGNORE_WARNINGS_BEGIN
 module l2_tlb_bank
     import mmu_pkg::*;
 #(
@@ -59,8 +58,6 @@ module l2_tlb_bank
     ptw_if.master ptw_if
 );
 
-    localparam int unsigned TLB_SET_IDX_SIZE = $clog2(NUM_TLB_SETS);
-    localparam int unsigned TLB_WAY_IDX_SIZE = $clog2(NUM_TLB_WAYS);
     localparam int unsigned MSHR_TAG_W = (MSHR_SIZE > 1) ? $clog2(MSHR_SIZE) : 1;
 
     // -------------------------------------------------------------------------
@@ -259,4 +256,3 @@ module l2_tlb_bank
 
 
 endmodule
-`IGNORE_WARNINGS_END

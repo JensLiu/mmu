@@ -1,5 +1,3 @@
-`IGNORE_WARNINGS_BEGIN
-
 // -----------------------------------------------------------------------------
 // PTW scheduler: matches bank walk requests to free PTWs and routes responses
 // back. Stateless - the response self-routes via a {bank_id, slot} tag.
@@ -159,5 +157,3 @@ module ptw_scheduler
 `endif
 
 endmodule
-
-`IGNORE_WARNINGS_END

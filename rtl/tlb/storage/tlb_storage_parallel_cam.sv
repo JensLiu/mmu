@@ -1,195 +1,296 @@
-/* Copyright 2023 BSC*
- * *Barcelona Supercomputing Center (BSC)
- *
- * SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
- *
- * Licensed under the Solderpad Hardware License v 2.1 (the “License”); you
- * may not use this file except in compliance with the License, or, at your
- * option, the Apache License version 2.0. You may obtain a copy of the
- * License at
- *
- * https://solderpad.org/licenses/SHL-2.1/
- *
- * Unless required by applicable law or agreed to in writing, any work
- * distributed under the License is distributed on an “AS IS” BASIS, WITHOUT
- * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
- * License for the specific language governing permissions and limitations
- * under the License.
- */
 
-`IGNORE_WARNINGS_BEGIN
-
-module tlb_storage_parallel_cam
-#(
-    localparam int unsigned LEVEL_W = mmu_pkg::LEVEL_BITS,
-    localparam int unsigned ASID_W  = mmu_pkg::ASID_SIZE,
-    localparam int unsigned VPN_W   = mmu_pkg::VPN_SIZE,
-    parameter int unsigned NUM_READ_PORTS = 1,
-    parameter int unsigned NUM_TLB_ENTRIES
+module tlb_storage_parallel_cam #(
+    localparam int unsigned NUM_LEVELS      = mmu_pkg::LEVELS,
+    localparam int unsigned LEVEL_W         = mmu_pkg::LEVEL_BITS,
+    localparam int unsigned ASID_W          = mmu_pkg::ASID_SIZE,
+    localparam int unsigned VPN_W           = mmu_pkg::VPN_SIZE,
+    localparam int unsigned VPN_W_PER_LVL   = mmu_pkg::PAGE_LVL_BITS,
+    parameter  int unsigned NUM_READ_PORTS  = 1,
+    parameter  int unsigned NUM_TLB_ENTRIES = 16
 ) (
     input logic clk_i,
     input logic rstn_i,
 
     // Read (combinational lookup)
-    input  logic                  read_valid_i,
-    output logic                  read_ready_o,
-    output logic                  read_is_hit_o,
-    input  logic [ ASID_SIZE-1:0] read_asid_i,
-    input  logic [  VPN_SIZE-1:0] read_vpn_i,
-    output logic [LEVEL_SIZE-1:0] read_level_o,
-    output mmu_pkg::tlb_entry_t            read_entry_o,
+    input  logic                              read_valid_i [NUM_READ_PORTS],
+    output logic                              read_ready_o [NUM_READ_PORTS],
+    output logic                              read_is_hit_o[NUM_READ_PORTS],
+    input  logic                [ ASID_W-1:0] read_asid_i  [NUM_READ_PORTS],
+    input  logic                [  VPN_W-1:0] read_vpn_i   [NUM_READ_PORTS],
+    output logic                [LEVEL_W-1:0] read_level_o [NUM_READ_PORTS],
+    output mmu_pkg::tlb_entry_t               read_entry_o [NUM_READ_PORTS],
 
     // Write
-    input  logic                  write_valid_i,
-    output logic                  write_ready_o,
-    input  logic [  VPN_SIZE-1:0] write_vpn_i,
-    input  logic [ ASID_SIZE-1:0] write_asid_i,
-    input  mmu_pkg::tlb_entry_t            write_entry_i,
+    input  logic                             write_valid_i,
+    output logic                             write_ready_o,
+    input  logic                [ VPN_W-1:0] write_vpn_i,
+    input  logic                [ASID_W-1:0] write_asid_i,
+    input  mmu_pkg::tlb_entry_t              write_entry_i,
 
     // Clear (flush all valid entries)
-    input  logic                  clear_valid_i,
-    output logic                  clear_ready_o
+    input  logic clear_valid_i,
+    output logic clear_ready_o
 );
+    localparam int unsigned TLB_IDX_W = $clog2(NUM_TLB_ENTRIES);
+    // Recency rank: read ports get ranks 0..NUM_READ_PORTS-1, a concurrent
+    // write (fill) gets the highest rank NUM_READ_PORTS so a freshly installed
+    // entry is treated as the most-recently-used.
+    localparam int unsigned RANK_W = $clog2(NUM_READ_PORTS + 1) + 1;
 
-    localparam int unsigned TLB_IDX_SIZE = $clog2(TLB_ENTRIES);
+    mmu_pkg::tlb_entry_t [NUM_TLB_ENTRIES-1:0] tlb_entries;
 
-    tlb_entry_t [TLB_ENTRIES-1:0] tlb_entries;
+    // Reference-matrix exact LRU: lru_matrix[i][j] == 1 means entry i is more
+    // recently used than entry j. On an access to entry a, row a is set to all
+    // 1s and column a to all 0s; the LRU victim is the entry whose row is all
+    // zero. This structure is multiport-friendly: several simultaneous hits are
+    // merged combinationally, with port index used to break the recency tie.
+    logic [NUM_TLB_ENTRIES-1:0] lru_matrix [NUM_TLB_ENTRIES];
 
-    // Truncate function
-    function [TLB_IDX_SIZE-1:0] trunc_tlb_idx_size(input [31:0] val_in);
-        trunc_tlb_idx_size = val_in[TLB_IDX_SIZE-1:0];
-    endfunction
+    for (genvar i = 0; i < NUM_READ_PORTS; i++) begin : g_read_valid
+        assign read_ready_o[i] = !write_valid_i && !clear_valid_i;
+    end
+    // The write (a fill) is fire-and-forget: always consumed, never deferred.
+    // If clear and write fire together, clear wins and the write is silently
+    // dropped (see the write FF below) rather than held — a deferred refill
+    // would install a stale translation once the page tables have changed.
+    assign write_ready_o = 1'b1;
+    assign clear_ready_o = '1;
 
     // -------------------------------------------------------------------------
     // Parallel CAM hit logic
     // --------------------------------------------------------
-    logic                    hit_per_lvl_per_port[NUM_READ_PORTS] [LEVELS];
-    logic                    hit_cam_per_port    [NUM_READ_PORTS];
-    logic [TLB_IDX_SIZE-1:0] hit_idx_per_port    [NUM_READ_PORTS];
-    logic [      VPN_SIZE:0] cache_vpn_per_port  [NUM_READ_PORTS];
-    // CAM hit logic
-    for (genvar port = 0; port < NUM_READ_PORTS; ++port) begin : g_cache_req
-        logic [TLB_ENTRIES-1:0] hits_per_lvl[LEVELS];
-        logic [TLB_ENTRIES-1:0] hits_cam;
+    // We run the per-level CAM compare over NUM_READ_PORTS + 1 query ports.
+    // Ports 0..NUM_READ_PORTS-1 are the external read ports; the extra port
+    // WR_PROBE presents the incoming write VPN/ASID so the write path can find
+    // an already-resident copy of the translation and overwrite it in place
+    // (de-dup / clean->dirty upgrade), reusing this exact same compare logic.
+    localparam int unsigned NUM_QUERY = NUM_READ_PORTS + 1;
+    localparam int unsigned WR_PROBE  = NUM_READ_PORTS;
 
+    logic [        VPN_W-1:0]   q_vpn          [NUM_QUERY];
+    logic [       ASID_W-1:0]   q_asid         [NUM_QUERY];
+    logic [NUM_TLB_ENTRIES-1:0] q_entry_hit_lvl[NUM_QUERY][NUM_LEVELS];
+    logic [NUM_TLB_ENTRIES-1:0] q_entry_hit    [NUM_QUERY];
+    logic                       q_hit          [NUM_QUERY];
+    logic [    TLB_IDX_W-1:0]   q_hit_idx      [NUM_QUERY];
+
+    for (genvar p = 0; p < NUM_READ_PORTS; p++) begin : g_read_query
+        assign q_vpn[p]  = read_vpn_i[p];
+        assign q_asid[p] = read_asid_i[p];
+    end
+    assign q_vpn[WR_PROBE]  = write_vpn_i;
+    assign q_asid[WR_PROBE] = write_asid_i;
+
+    for (genvar p = 0; p < NUM_QUERY; p++) begin : g_query_cam
         // Per-level hit vectors indexed by PTW level (0 = largest page).
         // For PTW level l, compare the top (l+1)*PAGE_LVL_BITS bits of the VPN:
-        //   SV39 (LEVELS=3, PAGE_LVL_BITS=9): l=0→vpn[26:18], l=1→vpn[26:9], l=2→vpn[26:0]
-        //   SV32 (LEVELS=2, PAGE_LVL_BITS=10): l=0→vpn[19:10], l=1→vpn[19:0]
-
-        assign cache_vpn_per_port[port] = tlb_storage_if.read_req[port].vpn;
-        logic [ASID_SIZE-1:0] cache_asid;
-        assign cache_asid = tlb_storage_if.read_req[port].asid;
-
-        for (genvar lvl = 0; lvl < LEVELS; lvl++) begin : g_cam_hits
-            // Number of VPN bits to compare for a leaf at PTW level lvl.
-            // lvl=0 (largest page): only the top PAGE_LVL_BITS bits matter.
-            // lvl=LEVELS-1 (4 KB): all VPN_SIZE bits must match.
-            localparam int VPN_CMP_BITS = (lvl + 1) * PAGE_LVL_BITS;
+        //   SV39 (LEVELS=3, PAGE_LVL_BITS=9): l=0 -> vpn[26:18], l=1 -> vpn[26:9], l=2 -> vpn[26:0]
+        //   SV32 (LEVELS=2, PAGE_LVL_BITS=10): l=0 -> vpn[19:10], l=1 -> vpn[19:0]
+        for (genvar lvl = 0; lvl < NUM_LEVELS; lvl++) begin : g_per_lvl_cam
+            localparam int VPN_CMP_W = (lvl + 1) * VPN_W_PER_LVL;
             always_comb begin
-                for (int i = 0; i < TLB_ENTRIES; i++) begin
-                    hits_per_lvl[lvl][i] = (
-                        (tlb_entries[i].vpn[VPN_SIZE-1 -: VPN_CMP_BITS] == cache_vpn_per_port[port][VPN_SIZE-1 -: VPN_CMP_BITS])
-                        && (tlb_entries[i].asid == cache_asid)
+                for (int i = 0; i < NUM_TLB_ENTRIES; i++) begin
+                    q_entry_hit_lvl[p][lvl][i] = (
+                        (tlb_entries[i].vpn[VPN_W-1 -: VPN_CMP_W] == q_vpn[p][VPN_W-1 -: VPN_CMP_W])
+                        && (tlb_entries[i].asid == q_asid[p])
                         && tlb_entries[i].valid
                         && (tlb_entries[i].level == 2'(lvl))
                     ) ? 1'b1 : 1'b0;
                 end
             end
-            assign hit_per_lvl_per_port[port][lvl] = |hits_per_lvl[lvl];
         end
 
-        // OR all per-level hits (each entry is tagged with exactly one level).
+        // OR the per-level vectors (each entry is tagged with exactly one level).
         always_comb begin
-            hits_cam = '0;
-            for (int l = 0; l < LEVELS; l++) hits_cam |= hits_per_lvl[l];
+            q_entry_hit[p] = '0;
+            for (int l = 0; l < NUM_LEVELS; l++) q_entry_hit[p] |= q_entry_hit_lvl[p][l];
         end
-        assign hit_cam_per_port[port] = |hits_cam;
+        assign q_hit[p] = |q_entry_hit[p];
 
-        // encodes the hit index
+        // Encode the first matching index.
         logic found;
         always_comb begin
-            hit_idx_per_port[port] = '0;  // don't care if no 'in' bits set
-            found                  = 0;
-            for (int i = 0; (i < TLB_ENTRIES) && (!found); i++) begin
-                if (hits_cam[i] == 1'b1) begin
-                    hit_idx_per_port[port] = trunc_tlb_idx_size($unsigned(i));
-                    found                  = 1;
+            q_hit_idx[p] = '0;
+            found        = 1'b0;
+            for (int i = 0; !found && i < NUM_TLB_ENTRIES; i++) begin
+                if (q_entry_hit[p][i]) begin
+                    q_hit_idx[p] = TLB_IDX_W'(i);
+                    found        = 1'b1;
                 end
             end
         end
     end
 
     // -------------------------------------------------------------------------
-    // Invalid Entry Tracking Logic
+    // Read Response Logic (real read ports only)
     // -------------------------------------------------------------------------
-    logic unsigned [TLB_IDX_SIZE-1:0] invalid_entry_idx;
-    logic                             invalid_entry_found;
-    assign tlb_storage_if.tlb_has_invalid_entry = invalid_entry_found;
-    assign tlb_storage_if.tlb_invalid_entry_idx     = invalid_entry_idx;
+    for (genvar p = 0; p < NUM_READ_PORTS; p++) begin : g_read_resp
+        assign read_is_hit_o[p] = q_hit[p];
+        assign read_entry_o[p]  = tlb_entries[q_hit_idx[p]];
+
+        // Select the matching level (largest index wins; an entry matches at
+        // exactly one level, so at most one per-level vector is non-zero).
+        logic [LEVEL_W-1:0] hit_lvl_sel;
+        always_comb begin
+            hit_lvl_sel = '0;
+            for (int hl = NUM_LEVELS - 1; hl >= 0; hl--) begin
+                if (|q_entry_hit_lvl[p][hl]) hit_lvl_sel = LEVEL_W'(hl);
+            end
+        end
+        assign read_level_o[p] = hit_lvl_sel;
+    end
+
+    // -------------------------------------------------------------------------
+    // Victim Selection
+    //   1. If the write translation is already resident (same VPN/ASID at the
+    //      write entry's level), overwrite that slot in place. This de-dups and
+    //      performs the clean->dirty upgrade without leaving a stale copy.
+    //   2. else the first invalid (free) slot.
+    //   3. else the LRU entry (matrix row all zero).
+    // -------------------------------------------------------------------------
+    logic [NUM_TLB_ENTRIES-1:0] valid_vec;
+    for (genvar i = 0; i < NUM_TLB_ENTRIES; i++) begin : g_valid_vec
+        assign valid_vec[i] = tlb_entries[i].valid;
+    end
+
+    // Existing copy of the incoming write, matched at the write entry's level
+    // (so we never clobber a coarser superpage that merely shares top VPN bits).
+    logic [NUM_TLB_ENTRIES-1:0] write_match_vec;
     always_comb begin
-        invalid_entry_found = 1'b0;
-        invalid_entry_idx   = '0;
-        for (int i = 0; i < TLB_ENTRIES; i++) begin
-            // Pick first invalid slot.
-            if (!invalid_entry_found && !tlb_entries[i].valid) begin
-                invalid_entry_idx   = trunc_tlb_idx_size($unsigned(i));
-                invalid_entry_found = 1'b1;
+        write_match_vec = '0;
+        for (int l = 0; l < NUM_LEVELS; l++) begin
+            if (write_entry_i.level == 2'(l)) write_match_vec = q_entry_hit_lvl[WR_PROBE][l];
+        end
+    end
+    wire write_match = |write_match_vec;
+
+    logic [TLB_IDX_W-1:0]       victim_idx;
+    logic [NUM_TLB_ENTRIES-1:0] victim_onehot;
+    always_comb begin
+        logic found;
+        victim_idx = '0;
+        found      = 1'b0;
+        if (write_match) begin
+            // Overwrite the resident copy in place.
+            for (int i = 0; !found && i < NUM_TLB_ENTRIES; i++) begin
+                if (write_match_vec[i]) begin
+                    victim_idx = TLB_IDX_W'(i);
+                    found      = 1'b1;
+                end
+            end
+        end else if (|(~valid_vec)) begin
+            // First invalid (free) slot.
+            for (int i = 0; !found && i < NUM_TLB_ENTRIES; i++) begin
+                if (!valid_vec[i]) begin
+                    victim_idx = TLB_IDX_W'(i);
+                    found      = 1'b1;
+                end
+            end
+        end else begin
+            // No free slot: evict the LRU entry, i.e. the one not more recent
+            // than any other (its matrix row is all zero). The diagonal is held
+            // at 0, so a plain row-is-zero test is sufficient.
+            for (int i = 0; !found && i < NUM_TLB_ENTRIES; i++) begin
+                if (lru_matrix[i] == '0) begin
+                    victim_idx = TLB_IDX_W'(i);
+                    found      = 1'b1;
+                end
+            end
+        end
+    end
+    always_comb begin
+        victim_onehot              = '0;
+        victim_onehot[victim_idx]  = 1'b1;
+    end
+
+    // -------------------------------------------------------------------------
+    // Replacement Policy Update (reference-matrix exact LRU)
+    // -------------------------------------------------------------------------
+    // Per-cycle access set. Reads and writes are mutually exclusive (a read is
+    // only handshaken when read_ready_o is high, which excludes write/clear
+    // cycles), so the access set comes from either the read ports or the fill,
+    // never both at once. Each entry records the rank of the accessing port to
+    // break the recency tie when two entries are accessed in the same cycle.
+    logic              accessed [NUM_TLB_ENTRIES];
+    logic [RANK_W-1:0] acc_rank [NUM_TLB_ENTRIES];
+
+    // Only real read ports drive the LRU; the WR_PROBE query is excluded (it is
+    // a de-dup lookup, not an access). The fill marks its slot MRU below.
+    logic [NUM_TLB_ENTRIES-1:0] port_access [NUM_READ_PORTS];
+    for (genvar p = 0; p < NUM_READ_PORTS; p++) begin : g_port_access
+        assign port_access[p] =
+            (read_valid_i[p] && read_ready_o[p]) ? q_entry_hit[p]
+                                                 : '0;
+    end
+
+    always_comb begin
+        for (int i = 0; i < NUM_TLB_ENTRIES; i++) begin
+            accessed[i] = 1'b0;
+            acc_rank[i] = '0;
+            // Highest-priority read port that hit this entry wins the rank.
+            for (int p = 0; p < NUM_READ_PORTS; p++) begin
+                if (port_access[p][i]) begin
+                    accessed[i] = 1'b1;
+                    acc_rank[i] = RANK_W'(p);
+                end
+            end
+            // A fill targets the victim slot and is the most recent of all.
+            if (write_valid_i && write_ready_o && victim_onehot[i]) begin
+                accessed[i] = 1'b1;
+                acc_rank[i] = RANK_W'(NUM_READ_PORTS);
             end
         end
     end
 
+    logic [NUM_TLB_ENTRIES-1:0] lru_matrix_n [NUM_TLB_ENTRIES];
+    always_comb begin
+        for (int i = 0; i < NUM_TLB_ENTRIES; i++) begin
+            for (int j = 0; j < NUM_TLB_ENTRIES; j++) begin
+                if (i == j) begin
+                    lru_matrix_n[i][j] = 1'b0;  // hold diagonal at 0
+                end else if (accessed[i] && !accessed[j]) begin
+                    lru_matrix_n[i][j] = 1'b1;  // i now more recent than j
+                end else if (!accessed[i] && accessed[j]) begin
+                    lru_matrix_n[i][j] = 1'b0;  // j now more recent than i
+                end else if (accessed[i] && accessed[j]) begin
+                    lru_matrix_n[i][j] = (acc_rank[i] > acc_rank[j]);
+                end else begin
+                    lru_matrix_n[i][j] = lru_matrix[i][j];  // unchanged
+                end
+            end
+        end
+    end
+
+    always_ff @(posedge clk_i) begin
+        if (!rstn_i || clear_valid_i) begin
+            for (int i = 0; i < NUM_TLB_ENTRIES; i++) lru_matrix[i] <= '0;
+        end else begin
+            for (int i = 0; i < NUM_TLB_ENTRIES; i++) lru_matrix[i] <= lru_matrix_n[i];
+        end
+    end
 
     // -------------------------------------------------------------------------
     // Write Logic
     // -------------------------------------------------------------------------
-
-    logic clear_tlb, write_tlb;
-    logic       [ TLB_ENTRIES-1:0] clear_mask;
-    logic       [TLB_IDX_SIZE-1:0] write_idx;
-    tlb_entry_t                    write_entry;
-
-    assign clear_tlb   = tlb_storage_if.clear_req.clear_tlb;
-    assign write_tlb   = tlb_storage_if.update_req.write_tlb;
-    assign write_idx   = tlb_storage_if.update_req.write_idx;
-    assign write_entry = tlb_storage_if.update_req.write_entry;
-
-    for (genvar i = 0; i < TLB_ENTRIES; ++i) begin : g_clear_mask
-        // flush also invalid entries
-        assign clear_mask[i] = !tlb_entries[i].valid || tlb_storage_if.clear_req.clear_mask[i];
+    mmu_pkg::tlb_entry_t write_entry;
+    always_comb begin
+        write_entry       = write_entry_i;
+        write_entry.vpn   = write_vpn_i;
+        write_entry.asid  = write_asid_i;
+        write_entry.valid = 1'b1;
     end
 
     always_ff @(posedge clk_i) begin
-        if (~rstn_i) begin
-            for (int i = 0; i < TLB_ENTRIES; ++i) begin
-                tlb_entries[i] <= '0;
-            end
-        end else begin
-            if (clear_tlb) begin
-                for (int i = 0; i < TLB_ENTRIES; ++i) begin
-                    if (clear_mask[i]) tlb_entries[i] <= '0;
-                end
-            end else if (write_tlb) begin
-                tlb_entries[write_idx] <= write_entry;
-            end
-        end
-    end
-
-    // Read Response Logic
-    always_comb begin
-        for (integer port = 0; port < NUM_READ_PORTS; ++port) begin
-            logic [LEVEL_BITS-1:0] hit_lvl_sel;
-            hit_lvl_sel = '0;
-            for (int hl = LEVELS - 1; hl >= 0; hl--) begin
-                if (hit_per_lvl_per_port[port][hl]) hit_lvl_sel = LEVEL_BITS'(hl);
-            end
-            tlb_storage_if.read_resp[port].is_hit    = hit_cam_per_port[port];
-            tlb_storage_if.read_resp[port].hit_idx   = hit_idx_per_port[port];
-            tlb_storage_if.read_resp[port].hit_level = hit_lvl_sel;
-            tlb_storage_if.read_resp[port].hit_entry = tlb_entries[hit_idx_per_port[port]];
+        if (!rstn_i) begin
+            for (int i = 0; i < NUM_TLB_ENTRIES; i++) tlb_entries[i] <= '0;
+        end else if (clear_valid_i) begin
+            // Flush all valid entries. clear wins over a coincident write: the
+            // write is dropped (not deferred), since it would be stale.
+            for (int i = 0; i < NUM_TLB_ENTRIES; i++) tlb_entries[i] <= '0;
+        end else if (write_valid_i) begin
+            tlb_entries[victim_idx] <= write_entry;
         end
     end
 
 endmodule
 
-`IGNORE_WARNINGS_END
