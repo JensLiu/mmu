@@ -151,7 +151,7 @@ module l1_tlb
     // Request / deliver engine
     // -------------------------------------------------------------------------
     inter_tlb_req_data_t                     req_data    [NUM_TLB_PORTS];
-    logic                [NUM_TLB_PORTS-1:0] resp_ready;
+    logic                [NUM_TLB_PORTS-1:0] rsp_ready;
     logic                [NUM_TLB_PORTS-1:0] fault_valid;
     logic                                    fill_valid;
     tlb_entry_t                              fill_entry;
@@ -164,7 +164,7 @@ module l1_tlb
         assign req_data[p].asid          = core_if[p].req_data.asid;
         assign req_data[p].prv           = core_if[p].req_data.priv_lvl;
         assign req_data[p].set_dirty_bit = write_dirty_bit[p];  // Rule 1: OR'd in the engine
-        assign resp_ready[p]             = core_if[p].rsp_ready;
+        assign rsp_ready[p]             = core_if[p].rsp_ready;
     end
 
     l1_tlb_request_engine #(
@@ -174,7 +174,7 @@ module l1_tlb
         .rstn_i       (rstn_i),
         .eff_miss_i   (read_effective_miss),
         .req_data_i   (req_data),
-        .resp_ready_i (resp_ready),
+        .rsp_ready_i (rsp_ready),
         // TLB Refill (master)
         .fill_valid_o (fill_valid),
         .fill_entry_o (fill_entry),

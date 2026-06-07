@@ -37,9 +37,8 @@ module mmu
     // CSR interface
     input csr_ptw_comm_t csr_ptw_comm_i,
 
-    // PTW - Memory Interface
-    output ptw_dmem_comm_t ptw_dmem_comm_o,
-    input  dmem_ptw_comm_t dmem_ptw_comm_i
+    // PTW - Memory Interface (ready/valid)
+    ptw_mem_if.ptw ptw_mem_if
 );
 
     // Unified ready/valid PTW links, shared between the L2 frontend (tlb side)
@@ -101,9 +100,8 @@ module mmu
         .clk_i          (clk_i),
         .rstn_i         (rstn_i),
         .ptw_if(ptw_link[0]),
-        // dmem request-response
-        .dmem_ptw_comm_i(dmem_ptw_comm_i),
-        .ptw_dmem_comm_o(ptw_dmem_comm_o),
+        // memory interface
+        .mem_if(ptw_mem_if),
         // csr interface
         .csr_ptw_comm_i(csr_ptw_comm_i)
     );

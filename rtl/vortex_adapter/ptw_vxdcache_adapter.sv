@@ -3,10 +3,11 @@
 module ptw_vxdcache_adapter #(
     parameter int unsigned NUM_PTWS = 1
 ) (
-    input  logic                    clk,
-    input  logic                    reset,
-    output mmu_pkg::dmem_ptw_comm_t dmem_ptw_comm_o[NUM_PTWS],
-    input  mmu_pkg::ptw_dmem_comm_t ptw_dmem_comm_i[NUM_PTWS],
+    input logic clk,
+    input logic reset,
+
+    // PTW memory side (ready/valid)
+    ptw_mem_if.mem mem_if[NUM_PTWS],
 
     VX_mem_bus_if.master mem_bus_if[NUM_PTWS]
 );
@@ -23,45 +24,40 @@ module ptw_vxdcache_adapter #(
     localparam int unsigned ADDR_OFFSET_BITS = $clog2(WORD_SIZE);
     localparam int unsigned ADDR_WIDTH = `MEM_ADDR_WIDTH - ADDR_OFFSET_BITS;
 
-    // PTE size in bytes: 4 for SV32 (XLEN=32), 8 for SV39 (XLEN=64)
-    // localparam int unsigned PTE_SIZE = `XLEN / 8;
-    // Response data width matches dmem_ptw_resp_t::data (always 64 bits)
+    // Response data width matches the PTW interface (always 64 bits)
     localparam int unsigned PTW_DATA_WIDTH = 64;
 
-    // Word address sent to the dcache (DCACHE_ADDR_WIDTH bits).
-    // DCACHE_ADDR_WIDTH is already a word-address width (byte offset stripped).
-    // Extract from the PTW byte address by dropping the low DCACHE_ADDR_OFFSET_BITS bits:
-    //   word_addr = byte_addr[DCACHE_ADDR_WIDTH+DCACHE_ADDR_OFFSET_BITS-1 : DCACHE_ADDR_OFFSET_BITS]
-    //             = byte_addr[MEM_ADDR_WIDTH-1 : log2(DCACHE_WORD_SIZE)]
+    // Word address sent to the dcache (byte offset stripped).
     logic [      ADDR_WIDTH-1:0] aligned_addr;
     // Byte offset within the dcache word (selects which PTE inside the cache word).
     logic [ADDR_OFFSET_BITS-1:0] word_offset;
     // Registered word_offset for response extraction (captured when request is sent)
     logic [ADDR_OFFSET_BITS-1:0] word_offset_r;
     always_comb begin
-        // Strip low DCACHE_ADDR_OFFSET_BITS (byte offset within word) to get word address.
-        aligned_addr = ADDR_WIDTH'(ptw_dmem_comm_i[0].req.addr >> ADDR_OFFSET_BITS);
-        word_offset  = ptw_dmem_comm_i[0].req.addr[ADDR_OFFSET_BITS-1:0];
+        aligned_addr = ADDR_WIDTH'(mem_if[0].req_addr >> ADDR_OFFSET_BITS);
+        word_offset  = mem_if[0].req_addr[ADDR_OFFSET_BITS-1:0];
     end
-    // However, we register it for timing closure since response path is registered.
     always_ff @(posedge clk) begin
         if (reset) begin
             word_offset_r <= '0;
-        end else if (ptw_dmem_comm_i[0].req.valid) begin
+        end else if (mem_if[0].req_valid) begin
             word_offset_r <= word_offset;
         end
     end
-    // NOTE: The MMU expect synchronous response
 
     // IMPORTANT:
-    // PTW holds req.valid combinatorially high for 2 extra cycles after the dcache handshake
-    // because both the request path and dmem_ready path are registered (1 cycle each).
-    // Cache hits have no MSHR entry to detect duplicates, so the dcache accepts it and
-    // returns a second response that corrupts the next page-table walk.
-    // req_accepted suppresses re-assertion until PTW deasserts req.valid (entering S_WAIT).
+    // PTW holds req_valid combinatorially high for 2 extra cycles after the dcache
+    // handshake because both the request path and req_ready path are registered.
+    // Cache hits have no MSHR entry to detect duplicates, so the dcache accepts it
+    // and returns a second response that corrupts the next walk.  req_accepted
+    // suppresses re-assertion until PTW deasserts req_valid (entering S_WAIT).
     logic req_accepted;
-    // Request: PTW → dcache
-    // NOTE: we don't need to check the offset because Vortex doesn't have atomic operations
+    // Read vs write (A/D write-back). Walks are read-only today, so this is 0;
+    // wired from req_cmd so the write path drops in once the PTW emits writes.
+    // TODO: a write also needs req_wdata placed at word_offset + byteen set.
+    wire  req_is_write = (mem_if[0].req_cmd != mmu_pkg::PTW_MEM_READ);
+
+    // Request: PTW -> dcache
     always_ff @(posedge clk) begin
         if (reset) begin
             req_accepted                     <= 1'b0;
@@ -74,61 +70,46 @@ module ptw_vxdcache_adapter #(
             mem_bus_if[0].req_data.tag.uuid  <= '0;
             mem_bus_if[0].req_data.tag.value <= '0;
         end else begin
-            // PTW deasserts req.valid when entering S_WAIT (between walk levels).
-            // That clears req_accepted so the next walk level can fire.
-            if (!ptw_dmem_comm_i[0].req.valid) begin
+            // PTW deasserts req_valid when entering S_WAIT (between walk levels),
+            // which clears req_accepted so the next walk level can fire.
+            if (!mem_if[0].req_valid) begin
                 req_accepted            <= 1'b0;
                 mem_bus_if[0].req_valid <= 1'b0;
             end else if (mem_bus_if[0].req_valid && mem_bus_if[0].req_ready) begin
-                // Handshake: suppress re-assertion while PTW still holds req.valid high.
                 req_accepted            <= 1'b1;
                 mem_bus_if[0].req_valid <= 1'b0;
             end else if (!req_accepted) begin
-                mem_bus_if[0].req_valid <= ptw_dmem_comm_i[0].req.valid;
+                mem_bus_if[0].req_valid <= mem_if[0].req_valid;
             end
-            mem_bus_if[0].req_data.rw        <= 0;
+            mem_bus_if[0].req_data.rw        <= req_is_write;
             mem_bus_if[0].req_data.addr      <= aligned_addr;
             mem_bus_if[0].req_data.byteen    <= '1;
-            mem_bus_if[0].req_data.data      <= '0;
+            mem_bus_if[0].req_data.data      <= '0;  // TODO: A/D write-back data
             mem_bus_if[0].req_data.flags     <= '0;  // < global memory access
-            // Tag is all zeros: UUID=0 (debug only), ClientID=0 (injected by VX_dcache_req_hub), rest=0.
+            // Tag is all zeros: UUID=0 (debug), ClientID injected downstream, rest=0.
             mem_bus_if[0].req_data.tag.uuid  <= '0;
             mem_bus_if[0].req_data.tag.value <= '0;
         end
     end
 
-
-    // Response: dcache → PTW
+    // Response: dcache -> PTW
     always_ff @(posedge clk) begin
         if (reset) begin
-            dmem_ptw_comm_o[0].dmem_ready <= 1'b0;
-            dmem_ptw_comm_o[0].resp       <= '0;
-            mem_bus_if[0].rsp_ready       <= 1'b0;
+            mem_if[0].req_ready     <= 1'b0;
+            mem_if[0].rsp_valid     <= 1'b0;
+            mem_if[0].rsp_data      <= '0;
+            mem_if[0].rsp_error     <= 1'b0;
+            mem_bus_if[0].rsp_ready <= 1'b0;
         end else begin
-            dmem_ptw_comm_o[0].dmem_ready <= mem_bus_if[0].req_ready;
-            dmem_ptw_comm_o[0].resp.valid <= mem_bus_if[0].rsp_valid;
-            dmem_ptw_comm_o[0].resp.nack <= '0;
-            dmem_ptw_comm_o[0].resp.addr <= '0;
-            dmem_ptw_comm_o[0].resp.tag_addr <= '0;
-            dmem_ptw_comm_o[0].resp.cmd <= '0;
-            dmem_ptw_comm_o[0].resp.typ <= '0;
-            dmem_ptw_comm_o[0].resp.replay <= '0;
-            dmem_ptw_comm_o[0].resp.has_data <= '0;
-            dmem_ptw_comm_o[0].resp.data_subw <= '0;
-            dmem_ptw_comm_o[0].resp.store_data <= '0;
-            dmem_ptw_comm_o[0].resp.rnvalid <= '0;
-            dmem_ptw_comm_o[0].resp.rnext <= '0;
-            dmem_ptw_comm_o[0].resp.xcpt_ma_ld <= '0;
-            dmem_ptw_comm_o[0].resp.xcpt_ma_st <= '0;
-            dmem_ptw_comm_o[0].resp.xcpt_pf_ld <= '0;
-            dmem_ptw_comm_o[0].resp.xcpt_pf_st <= '0;
-            dmem_ptw_comm_o[0].resp.ordered <= '0;
+            mem_if[0].req_ready <= mem_bus_if[0].req_ready;
+            mem_if[0].rsp_valid <= mem_bus_if[0].rsp_valid;
+            mem_if[0].rsp_error <= 1'b0;  // no PTE-access fault reported by the dcache
             // Extract one PTE (XLEN bits) at the byte offset within the cache word,
-            // then zero-extend to PTW_DATA_WIDTH (64b). For SV32: 32b→64b; SV39: 64b→64b.
-            // Use registered offset to match the original request.
-            dmem_ptw_comm_o[0].resp.data <=
-          PTW_DATA_WIDTH'(mem_bus_if[0].rsp_data.data[word_offset_r*8+:`XLEN]);
-            mem_bus_if[0].rsp_ready <= 1'b1;  // < The MMU always accept the response
+            // then zero-extend to 64b (SV32: 32b->64b; SV39: 64b->64b). Uses the
+            // registered offset so it matches the original request.
+            mem_if[0].rsp_data <=
+                PTW_DATA_WIDTH'(mem_bus_if[0].rsp_data.data[word_offset_r*8+:`XLEN]);
+            mem_bus_if[0].rsp_ready <= 1'b1;  // < the MMU always accepts the response
         end
     end
 endmodule

@@ -28,9 +28,9 @@ module VX_mmu #(
     assign csr_ptw_comm_i.flush   = csr_mmu_if.flush_tlb;
     assign csr_ptw_comm_i.mstatus = mmu_pkg::csr_mstatus_t'(csr_mmu_if.mstatus);
 
-    // PTW - Memory Interface
-    mmu_pkg::ptw_dmem_comm_t ptw_dmem_comm_o[NUM_PTW_PORTS];
-    mmu_pkg::dmem_ptw_comm_t dmem_ptw_comm_i[NUM_PTW_PORTS];
+    // PTW - Memory Interface (ready/valid), shared between mmu (PTW) and the
+    // dcache adapter (memory side).
+    ptw_mem_if ptw_mem_link[NUM_PTW_PORTS] ();
 
     mmu #(
         .NUM_DTLBS_PER_CORE(NUM_CHANNELS_PER_CORE),
@@ -43,8 +43,7 @@ module VX_mmu #(
         .dtlb_core_if(dtlb_core_if),
         .csr_ptw_comm_i(csr_ptw_comm_i),
         // currently, we only support 1 PTW port
-        .ptw_dmem_comm_o(ptw_dmem_comm_o[0]),
-        .dmem_ptw_comm_i(dmem_ptw_comm_i[0])
+        .ptw_mem_if(ptw_mem_link[0])
     );
 
     tlb_vxcore_adapter #(
@@ -61,11 +60,10 @@ module VX_mmu #(
     ptw_vxdcache_adapter #(
         .NUM_PTWS(NUM_PTW_PORTS)
     ) ptw_adapter (
-        .clk            (clk),
-        .reset          (reset),
-        .dmem_ptw_comm_o(dmem_ptw_comm_i),
-        .ptw_dmem_comm_i(ptw_dmem_comm_o),
-        .mem_bus_if     (ptw_mem_bus_if)
+        .clk       (clk),
+        .reset     (reset),
+        .mem_if    (ptw_mem_link),
+        .mem_bus_if(ptw_mem_bus_if)
     );
 
 endmodule

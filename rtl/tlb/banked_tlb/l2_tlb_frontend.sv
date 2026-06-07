@@ -66,7 +66,7 @@ module l2_tlb_frontend
         assign l1_l2_if[i].req_ready      = src_req_ready[i];
 
         assign l1_l2_if[i].rsp_valid      = src_rsp_valid[i];
-        assign l1_l2_if[i].rsp_data       = inter_tlb_rsp_data_t'(src_rsp_data[i]);
+        assign l1_l2_if[i].rsp_data       = mmu_pkg::inter_tlb_rsp_data_t'(src_rsp_data[i]);
         assign src_rsp_ready[i]           = l1_l2_if[i].rsp_ready;
 
         // Broadcast flush to every L1 (not request-matched). All PTWs carry the
@@ -113,7 +113,7 @@ module l2_tlb_frontend
     ptw_if bank_ptw[NUM_BANKS] ();
 
     for (genvar b = 0; b < NUM_BANKS; ++b) begin : g_banks
-        inter_tlb_rsp_data_t bank_rsp_struct;
+        mmu_pkg::inter_tlb_rsp_data_t bank_rsp_struct;
 
         l2_tlb_bank #(
             .SRC_W   (SRC_SEL_W),

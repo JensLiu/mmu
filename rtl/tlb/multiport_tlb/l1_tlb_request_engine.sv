@@ -27,7 +27,7 @@
 // written to the CAM and is re-derivable every cycle, so it self-heals under
 // backpressure.  A page fault has no CAM backing - it is a one-shot event.  So
 // on an error response we capture the coalesced faulting ports into a bitmap,
-// hold fault_valid_o for each until it is acknowledged via resp_ready_i, and
+// hold fault_valid_o for each until it is acknowledged via rsp_ready_i, and
 // block the next walk until the bitmap drains.  (The core ties ready=1 today,
 // so this drains in one cycle, but the handshake exists for correctness.)
 //
@@ -60,7 +60,7 @@ module l1_tlb_request_engine
     output logic       [ VPN_SIZE-1:0] fill_vpn_o,
     output logic       [ASID_SIZE-1:0] fill_asid_o,
 
-    input  logic [NUM_TLB_PORTS-1:0] resp_ready_i,  // core ready to accept fault delivery
+    input  logic [NUM_TLB_PORTS-1:0] rsp_ready_i,  // core ready to accept fault delivery
     // Per-port PTW page-fault delivery, held until acknowledged.
     output logic [NUM_TLB_PORTS-1:0] fault_valid_o,
 
@@ -178,7 +178,7 @@ module l1_tlb_request_engine
 
     // Fault bitmap: who still owes us an acknowledgement.
     logic [NUM_TLB_PORTS-1:0] fault_pending, fault_pending_n;
-    wire [NUM_TLB_PORTS-1:0] fault_ack = fault_valid_o & resp_ready_i;
+    wire [NUM_TLB_PORTS-1:0] fault_ack = fault_valid_o & rsp_ready_i;
     wire                     fault_busy = |fault_pending;
 
     assign fault_valid_o = (req_state == PS_FAULT_DRAIN) ? fault_pending : '0;

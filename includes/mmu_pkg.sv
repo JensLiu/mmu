@@ -246,43 +246,14 @@ package mmu_pkg;
     // ---------------------------------------------------------
     // PTW-DRAM
     // ---------------------------------------------------------
-    typedef struct packed {
-        logic                valid;
-        logic [SIZE_VADDR:0] addr;
-        logic [4:0]          cmd;
-        logic [3:0]          typ;
-        logic                kill;
-        logic                phys;
-        logic [63:0]         data;
-    } ptw_dmem_req_t;
-
-    typedef struct packed {ptw_dmem_req_t req;} ptw_dmem_comm_t;
-
-    typedef struct packed {
-        logic                valid;
-        logic [SIZE_VADDR:0] addr;
-        logic [7:0]          tag_addr;
-        logic [4:0]          cmd;
-        logic [3:0]          typ;
-        logic [63:0]         data;
-        logic                nack;
-        logic                replay;
-        logic                has_data;
-        logic [63:0]         data_subw;
-        logic [63:0]         store_data;
-        logic                rnvalid;
-        logic [7:0]          rnext;
-        logic                xcpt_ma_ld;
-        logic                xcpt_ma_st;
-        logic                xcpt_pf_ld;
-        logic                xcpt_pf_st;
-        logic                ordered;
-    } dmem_ptw_resp_t;
-
-    typedef struct packed {
-        logic           dmem_ready;
-        dmem_ptw_resp_t resp;
-    } dmem_ptw_comm_t;
+    // Page-table-walker memory command (ptw_mem_if). A plain WRITE is sufficient
+    // while page tables are static (Vortex); AMO_OR is the spec-compliant atomic
+    // A/D update for systems that mutate page tables concurrently.
+    typedef enum logic [1:0] {
+        PTW_MEM_READ   = 2'd0,
+        PTW_MEM_WRITE  = 2'd1,
+        PTW_MEM_AMO_OR = 2'd2
+    } ptw_mem_cmd_e;
 
     // ---------------------------------------------------------
     // CSR interface

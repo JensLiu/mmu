@@ -64,30 +64,22 @@ module l2_tlb_bank
     // pte_t -> payload / cache entry helpers
     // -------------------------------------------------------------------------
     /* verilator lint_off UNUSEDSIGNAL */
-    function automatic inter_tlb_rsp_data_t rsp_from_pte(
-        input pte_t pte, input logic [LEVEL_BITS-1:0] level, input logic error);
-        rsp_from_pte                    = '0;
-        rsp_from_pte.error              = error;
-        rsp_from_pte.tlb_entry.ppn      = pte.ppn;
-        rsp_from_pte.tlb_entry.level    = 2'(level);
-        rsp_from_pte.tlb_entry.dirty    = pte.d;
-        rsp_from_pte.tlb_entry.access   = pte.a;
-        rsp_from_pte.tlb_entry.perms.ur = pte.r & pte.u & pte.v;
-        rsp_from_pte.tlb_entry.perms.uw = pte.w & pte.u & pte.v;
-        rsp_from_pte.tlb_entry.perms.ux = pte.x & pte.u & pte.v;
-        rsp_from_pte.tlb_entry.perms.sr = pte.r & ~pte.u & pte.v;
-        rsp_from_pte.tlb_entry.perms.sw = pte.w & ~pte.u & pte.v;
-        rsp_from_pte.tlb_entry.perms.sx = pte.x & ~pte.u & pte.v;
-        rsp_from_pte.tlb_entry.valid    = !error;
-    endfunction
-
     function automatic tlb_entry_t entry_from_pte(
-        input pte_t pte, input logic [LEVEL_BITS-1:0] level, input logic [VPN_SIZE-1:0] vpn,
-        input logic [ASID_SIZE-1:0] asid);
-        inter_tlb_rsp_data_t r = rsp_from_pte(pte, level, 1'b0);
-        entry_from_pte      = r.tlb_entry;
-        entry_from_pte.vpn  = vpn;
-        entry_from_pte.asid = asid;
+        input logic [VPN_SIZE-1:0] vpn, input logic [ASID_SIZE-1:0] asid, input pte_t pte,
+        input logic [LEVEL_BITS-1:0] level, input logic error);
+        entry_from_pte.vpn      = vpn;
+        entry_from_pte.asid     = asid;
+        entry_from_pte.ppn      = pte.ppn;
+        entry_from_pte.level    = 2'(level);
+        entry_from_pte.dirty    = pte.d;
+        entry_from_pte.access   = pte.a;
+        entry_from_pte.perms.ur = pte.r & pte.u & pte.v;
+        entry_from_pte.perms.uw = pte.w & pte.u & pte.v;
+        entry_from_pte.perms.ux = pte.x & pte.u & pte.v;
+        entry_from_pte.perms.sr = pte.r & ~pte.u & pte.v;
+        entry_from_pte.perms.sw = pte.w & ~pte.u & pte.v;
+        entry_from_pte.perms.sx = pte.x & ~pte.u & pte.v;
+        entry_from_pte.valid    = !error;
     endfunction
     /* verilator lint_on UNUSEDSIGNAL */
 
@@ -221,14 +213,16 @@ module l2_tlb_bank
     // -------------------------------------------------------------------------
     // Entry for current TLB update
     tlb_entry_t deliver_entry;
-    assign deliver_entry = entry_from_pte(deliver_pte, deliver_level, deliver_vpn, deliver_asid);
+    assign deliver_entry = entry_from_pte(
+        deliver_vpn, deliver_asid, deliver_pte, deliver_level, deliver_level
+    );
     // Response for upstream TLB update
-    inter_tlb_rsp_data_t deliver_rsp;  // MSHR Deliver Response
-    assign deliver_rsp = rsp_from_pte(deliver_pte, deliver_level, deliver_error);
-    inter_tlb_rsp_data_t hit_rsp;  // TLB Hit Response
+    inter_tlb_rsp_data_t deliver_rsp  /*MSHR Deliver Response*/, hit_rsp  /* TLB Hit Response */;
     always_comb begin
-        hit_rsp           = '0;
-        hit_rsp.tlb_entry = tlb_read_hit_entry;
+        deliver_rsp.tlb_entry = deliver_entry;
+        deliver_rsp.error     = deliver_error;
+        hit_rsp.tlb_entry     = tlb_read_hit_entry;
+        hit_rsp.error         = 1'b0;
     end
 
     logic deliver_engine_hit_ready;  // Hit/Deliver Arbitration (request ready back pressure)
