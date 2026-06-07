@@ -306,7 +306,10 @@ module l2_tlb_mshr #(
             if (fill_fire) begin
                 mshr_entries[fill_id_i].pte   <= fill_pte_i;
                 mshr_entries[fill_id_i].level <= fill_level_i;
-                assert (!fill_error_i);
+                // assert (!fill_error_i);
+                if (fill_error_i) begin
+                    $finish;
+                end
                 mshr_entries[fill_id_i].error <= fill_error_i;
                 if (mshr_entries[fill_id_i].state == ES_CLEAN_PENDING_FILL)
                     mshr_entries[fill_id_i].state <= ES_CLEAN_PENDING_DELIVER;

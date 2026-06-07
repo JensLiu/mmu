@@ -116,12 +116,12 @@ module ptw_scheduler
     logic                rsp_valid;
     logic [PTW_ID_W-1:0] rsp_ptw;
     always_comb begin
-        rsp_valid   = 1'b0;
-        rsp_ptw = '0;
+        rsp_valid = 1'b0;
+        rsp_ptw   = '0;
         for (int j = 0; j < NUM_PTWS; j++)
         if (!rsp_valid && ptw_rsp_valid[j]) begin
-            rsp_valid   = 1'b1;
-            rsp_ptw = PTW_ID_W'(j);
+            rsp_valid = 1'b1;
+            rsp_ptw   = PTW_ID_W'(j);
         end
     end
 
