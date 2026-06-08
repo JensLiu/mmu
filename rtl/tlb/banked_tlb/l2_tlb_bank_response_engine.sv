@@ -22,7 +22,7 @@ module l2_tlb_bank_response_engine
     localparam int unsigned CORE_ID_W = (NUM_CORES > 1) ? $clog2(NUM_CORES) : 1
 ) (
     input logic clk_i,
-    input logic rstn_i,
+    input logic rst_i,
 
     // MSHR deliver (slave): a coalesced core set + payload, taken in one fire.
     input  logic                                         mshr_deliver_valid_i,
@@ -92,7 +92,7 @@ module l2_tlb_bank_response_engine
     // back-to-back groups have no bubble; data is stable while draining.
     // -------------------------------------------------------------------------
     always_ff @(posedge clk_i) begin
-        if (!rstn_i) begin
+        if (rst_i) begin
             mask <= '0;
         end else if (free_next) begin
             if (load_deliver) begin

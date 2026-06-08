@@ -30,17 +30,20 @@
 //
 // The store is the correctness backstop and is written exactly once per slot,
 // on its terminal deliver (so each VPN appears at most once in the store).
-module l2_tlb_bank
-    import mmu_pkg::*;
-#(
-    parameter int unsigned SRC_W        = 1,    // = LOG2UP(NUM_SRCS)
-    parameter int unsigned NUM_SRCS     = 2,    // requesters served by this bank
+module l2_tlb_bank #(
+    parameter int unsigned SRC_W = 1,  // = LOG2UP(NUM_SRCS)
+    parameter int unsigned NUM_SRCS = 2,  // requesters served by this bank
     parameter int unsigned NUM_TLB_SETS = 128,
     parameter int unsigned NUM_TLB_WAYS = 8,
-    parameter int unsigned MSHR_SIZE    = 4
+    parameter int unsigned MSHR_SIZE = 4,
+    localparam int unsigned VPN_WIDTH = mmu_pkg::VPN_WIDTH,
+    localparam int unsigned ASID_WIDTH = mmu_pkg::ASID_WIDTH,
+    localparam int unsigned LEVEL_BITS = mmu_pkg::LEVEL_BITS,
+    localparam int unsigned PTW_TAG_SLOT_WIDTH = mmu_pkg::PTW_TAG_SLOT_WIDTH,
+    localparam int unsigned MSHR_TAG_WIDTH = (MSHR_SIZE > 1) ? $clog2(MSHR_SIZE) : 1
 ) (
     input logic clk_i,
-    input logic rstn_i,
+    input logic rst_i,
 
     // Request (slave)
     input  logic                                     req_valid_i,
@@ -58,15 +61,14 @@ module l2_tlb_bank
     ptw_if.master ptw_if
 );
 
-    localparam int unsigned MSHR_TAG_W = (MSHR_SIZE > 1) ? $clog2(MSHR_SIZE) : 1;
 
     // -------------------------------------------------------------------------
     // pte_t -> payload / cache entry helpers
     // -------------------------------------------------------------------------
     /* verilator lint_off UNUSEDSIGNAL */
-    function automatic tlb_entry_t entry_from_pte(
-        input logic [VPN_SIZE-1:0] vpn, input logic [ASID_SIZE-1:0] asid, input pte_t pte,
-        input logic [LEVEL_BITS-1:0] level, input logic error);
+    function automatic mmu_pkg::tlb_entry_t entry_from_pte(
+        input logic [VPN_WIDTH-1:0] vpn, input logic [ASID_WIDTH-1:0] asid,
+        input mmu_pkg::pte_t pte, input logic [LEVEL_BITS-1:0] level, input logic error);
         entry_from_pte.vpn      = vpn;
         entry_from_pte.asid     = asid;
         entry_from_pte.ppn      = pte.ppn;
@@ -100,7 +102,7 @@ module l2_tlb_bank
         .NUM_TLB_WAYS(NUM_TLB_WAYS)
     ) tlb_storage (
         .clk_i        (clk_i),
-        .rstn_i       (rstn_i),
+        .rst_i        (rst_i),
         // Read (slave)
         .read_valid_i (req_valid_i),
         .read_ready_o (tlb_read_ready),
@@ -131,7 +133,7 @@ module l2_tlb_bank
     // Request acceptance
     // -------------------------------------------------------------------------
     always_comb begin
-        if (!rstn_i) begin
+        if (rst_i) begin
             req_ready_o = 1'b0;
         end else if (read_effective_hit) begin
             // Read Hit: ask deliver engine to accept this hit
@@ -145,25 +147,25 @@ module l2_tlb_bank
     // -------------------------------------------------------------------------
     // MSHR
     // -------------------------------------------------------------------------
-    logic                  allocate_ready;
-    logic                  deliver_valid;
-    logic                  deliver_ready;
-    logic [  NUM_SRCS-1:0] deliver_cores;
-    pte_t                  deliver_pte;
-    logic [LEVEL_BITS-1:0] deliver_level;
-    logic                  deliver_error;
-    logic [  VPN_SIZE-1:0] deliver_vpn;
-    logic [ ASID_SIZE-1:0] deliver_asid;
-    logic                  deliver_write_cache;
-    wire                   deliver_fire = deliver_valid && deliver_ready;
-    wire                   alloc_valid = req_valid_i && !read_effective_hit;
+    logic                           allocate_ready;
+    logic                           deliver_valid;
+    logic                           deliver_ready;
+    logic          [  NUM_SRCS-1:0] deliver_cores;
+    mmu_pkg::pte_t                  deliver_pte;
+    logic          [LEVEL_BITS-1:0] deliver_level;
+    logic                           deliver_error;
+    logic          [ VPN_WIDTH-1:0] deliver_vpn;
+    logic          [ASID_WIDTH-1:0] deliver_asid;
+    logic                           deliver_write_cache;
+    wire                            deliver_fire = deliver_valid && deliver_ready;
+    wire                            alloc_valid = req_valid_i && !read_effective_hit;
 
     l2_tlb_mshr #(
         .MSHR_SIZE(MSHR_SIZE),
         .NUM_CORES(NUM_SRCS)
     ) mshr (
         .clk_i                (clk_i),
-        .rstn_i               (rstn_i),
+        .rst_i                (rst_i),
         // Allocate (slave)
         .allocate_valid_i     (alloc_valid),
         .allocate_ready_o     (allocate_ready),
@@ -175,7 +177,7 @@ module l2_tlb_bank
         // PTW Issue (master)
         .issue_valid_o        (ptw_if.req_valid),
         .issue_ready_i        (ptw_if.req_ready),
-        .issue_id_o           (ptw_if.req_data.tag.mshr_slot[MSHR_TAG_W-1:0]),
+        .issue_id_o           (ptw_if.req_data.tag.mshr_slot[MSHR_TAG_WIDTH-1:0]),
         .issue_vpn_o          (ptw_if.req_data.vpn),
         .issue_asid_o         (ptw_if.req_data.asid),
         .issue_set_dirty_o    (ptw_if.req_data.store),
@@ -183,7 +185,7 @@ module l2_tlb_bank
         // PTW Fill (slave)
         .fill_valid_i         (ptw_if.rsp_valid),
         .fill_ready_o         (ptw_if.rsp_ready),
-        .fill_id_i            (MSHR_TAG_W'(ptw_if.rsp_data.tag.mshr_slot)),
+        .fill_id_i            (MSHR_TAG_WIDTH'(ptw_if.rsp_data.tag.mshr_slot)),
         .fill_pte_i           (ptw_if.rsp_data.pte),
         .fill_level_i         (ptw_if.rsp_data.level),
         .fill_error_i         (ptw_if.rsp_data.error),
@@ -201,9 +203,9 @@ module l2_tlb_bank
     );
 
     assign ptw_if.req_data.tag.bank = '0;  // Filled later by the scheduler
-    if (PTW_TAG_SLOT_W > MSHR_TAG_W) begin : g_slot_hi
+    if (PTW_TAG_SLOT_WIDTH > MSHR_TAG_WIDTH) begin : g_slot_hi
         // zero out the unused high slot bits if the MSHR is smaller than the slot field.
-        assign ptw_if.req_data.tag.mshr_slot[PTW_TAG_SLOT_W-1:MSHR_TAG_W] = '0;
+        assign ptw_if.req_data.tag.mshr_slot[PTW_TAG_SLOT_WIDTH-1:MSHR_TAG_WIDTH] = '0;
     end
 
     // -------------------------------------------------------------------------
@@ -212,12 +214,13 @@ module l2_tlb_bank
     // structs (PTE expansion + the cache write stay here in the bank).
     // -------------------------------------------------------------------------
     // Entry for current TLB update
-    tlb_entry_t deliver_entry;
+    mmu_pkg::tlb_entry_t deliver_entry;
     assign deliver_entry = entry_from_pte(
         deliver_vpn, deliver_asid, deliver_pte, deliver_level, deliver_level
     );
     // Response for upstream TLB update
-    inter_tlb_rsp_data_t deliver_rsp  /*MSHR Deliver Response*/, hit_rsp  /* TLB Hit Response */;
+    mmu_pkg::inter_tlb_rsp_data_t
+        deliver_rsp  /*MSHR Deliver Response*/, hit_rsp  /* TLB Hit Response */;
     always_comb begin
         deliver_rsp.tlb_entry = deliver_entry;
         deliver_rsp.error     = deliver_error;
@@ -230,7 +233,7 @@ module l2_tlb_bank
         .NUM_CORES(NUM_SRCS)
     ) resp_engine (
         .clk_i               (clk_i),
-        .rstn_i              (rstn_i),
+        .rst_i               (rst_i),
         // MSHR Deliver (slave)
         .mshr_deliver_valid_i(deliver_valid),
         .mshr_deliver_ready_o(deliver_ready),

@@ -40,32 +40,32 @@
 module l2_tlb_mshr #(
     parameter  int unsigned MSHR_SIZE    = 4,
     parameter  int unsigned NUM_CORES    = 32,
-    localparam int unsigned VPN_SIZE     = mmu_pkg::VPN_SIZE,
-    localparam int unsigned ASID_SIZE    = mmu_pkg::ASID_SIZE,
+    localparam int unsigned VPN_WIDTH    = mmu_pkg::VPN_WIDTH,
+    localparam int unsigned ASID_WIDTH   = mmu_pkg::ASID_WIDTH,
     localparam int unsigned LEVEL_BITS   = mmu_pkg::LEVEL_BITS,
     localparam int unsigned TAG_W        = (MSHR_SIZE > 1) ? $clog2(MSHR_SIZE) : 1,
     localparam int unsigned CORE_ID_SIZE = (NUM_CORES > 1) ? $clog2(NUM_CORES) : 1
 ) (
     input logic clk_i,
-    input logic rstn_i,
+    input logic rst_i,
 
     // Allocate
     input  logic                    allocate_valid_i,
     output logic                    allocate_ready_o,
-    input  logic [    VPN_SIZE-1:0] allocate_vpn_i,
-    input  logic [   ASID_SIZE-1:0] allocate_asid_i,
+    input  logic [   VPN_WIDTH-1:0] allocate_vpn_i,
+    input  logic [  ASID_WIDTH-1:0] allocate_asid_i,
     input  logic                    allocate_set_dirty_i,  // store (needs dirty)
     input  logic [             1:0] allocate_prv_i,
     input  logic [CORE_ID_SIZE-1:0] allocate_core_id_i,
 
     // Issue (to PTW)
-    output logic                 issue_valid_o,
-    input  logic                 issue_ready_i,
-    output logic [    TAG_W-1:0] issue_id_o,
-    output logic [ VPN_SIZE-1:0] issue_vpn_o,
-    output logic [ASID_SIZE-1:0] issue_asid_o,
-    output logic                 issue_set_dirty_o,
-    output logic [          1:0] issue_prv_o,
+    output logic                  issue_valid_o,
+    input  logic                  issue_ready_i,
+    output logic [     TAG_W-1:0] issue_id_o,
+    output logic [ VPN_WIDTH-1:0] issue_vpn_o,
+    output logic [ASID_WIDTH-1:0] issue_asid_o,
+    output logic                  issue_set_dirty_o,
+    output logic [           1:0] issue_prv_o,
 
     // Fill (from PTW, keyed by tag)
     input  logic                           fill_valid_i,
@@ -82,8 +82,8 @@ module l2_tlb_mshr #(
     output mmu_pkg::pte_t                  deliver_pte_o,
     output logic          [LEVEL_BITS-1:0] deliver_level_o,
     output logic                           deliver_error_o,
-    output logic          [  VPN_SIZE-1:0] deliver_vpn_o,
-    output logic          [ ASID_SIZE-1:0] deliver_asid_o,
+    output logic          [ VPN_WIDTH-1:0] deliver_vpn_o,
+    output logic          [ASID_WIDTH-1:0] deliver_asid_o,
     output logic                           deliver_write_cache_o, // terminal & !error
 
     // Issue-pending bitmask (one bit per slot in a *_PENDING_ISSUE state)
@@ -105,8 +105,8 @@ module l2_tlb_mshr #(
 
     typedef struct packed {
         mshr_entry_state_t     state;
-        logic [VPN_SIZE-1:0]   vpn;
-        logic [ASID_SIZE-1:0]  asid;
+        logic [VPN_WIDTH-1:0]  vpn;
+        logic [ASID_WIDTH-1:0] asid;
         logic                  set_dirty;
         logic [1:0]            prv;
         logic                  dirty_poison;
@@ -228,7 +228,7 @@ module l2_tlb_mshr #(
         .SIZE(MSHR_SIZE)
     ) allocator (
         .clk         (clk_i),
-        .reset       (~rstn_i),
+        .reset       (rst_i),
         .acquire_en  (alloc_fire),
         .acquire_addr(alloc_id),
         .release_en  (release_fire),
@@ -271,7 +271,7 @@ module l2_tlb_mshr #(
     // coalesce never coincides with deliver (allocate.ready=0 on deliver_fire).
     // -------------------------------------------------------------------------
     always_ff @(posedge clk_i) begin
-        if (!rstn_i) begin
+        if (rst_i) begin
             for (int i = 0; i < MSHR_SIZE; i++) mshr_entries[i].state <= ES_INVALID;
         end else begin
             // Coalesce onto an existing slot
@@ -337,7 +337,7 @@ module l2_tlb_mshr #(
     // -------------------------------------------------------------------------
 `ifdef SIMULATION
     always_ff @(posedge clk_i) begin
-        if (rstn_i) begin
+        if (!rst_i) begin
             if (fill_fire)
                 assert (mshr_entries[fill_id_i].state == ES_CLEAN_PENDING_FILL
                      || mshr_entries[fill_id_i].state == ES_DIRTY_PENDING_FILL)

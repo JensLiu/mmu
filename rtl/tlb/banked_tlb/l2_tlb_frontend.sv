@@ -19,30 +19,29 @@
  */
 
 
-module l2_tlb_frontend
-    import mmu_pkg::*;
-#(
-    parameter int unsigned NUM_REQS  = 1,
-    parameter int unsigned NUM_BANKS = 1,
-    parameter int unsigned NUM_PTWS  = 1
+module l2_tlb_frontend #(
+    parameter  int unsigned NUM_REQS   = 1,
+    parameter  int unsigned NUM_BANKS  = 1,
+    parameter  int unsigned NUM_PTWS   = 1,
+    localparam int unsigned VPN_WIDTH  = mmu_pkg::VPN_WIDTH,
+    localparam int unsigned SRC_SEL_W  = (NUM_REQS > 1) ? $clog2(NUM_REQS) : 1,
+    localparam int unsigned BANK_SEL_W = (NUM_BANKS > 1) ? $clog2(NUM_BANKS) : 1,
+    localparam int unsigned REQ_W      = $bits(mmu_pkg::inter_tlb_req_data_t),
+    localparam int unsigned RSP_W      = $bits(mmu_pkg::inter_tlb_rsp_data_t)
 ) (
     input logic clk_i,  // System clock signal.
-    input logic rstn_i, // System reset signal (active low).
+    input logic rst_i,  // System reset signal (active low).
 
     // L1-L2 TLB interface (one fire-once link per L1)
     inter_tlb_if.slave l1_l2_if[NUM_REQS],
     ptw_if.master      ptw_if  [NUM_PTWS]
 );
 
-    localparam int unsigned SRC_SEL_W = (NUM_REQS > 1) ? $clog2(NUM_REQS) : 1;
-    localparam int unsigned BANK_SEL_W = (NUM_BANKS > 1) ? $clog2(NUM_BANKS) : 1;
-    localparam int unsigned REQ_W = $bits(inter_tlb_req_data_t);
-    localparam int unsigned RSP_W = $bits(inter_tlb_rsp_data_t);
 
     // VPN -> bank. Constant 0 for a single bank; low-bit map as a placeholder for
     // multi-bank (replace with an XOR-fold over page-size-invariant bits).
     /* verilator lint_off UNUSEDSIGNAL */
-    function automatic logic [BANK_SEL_W-1:0] bank_sel(input logic [VPN_SIZE-1:0] vpn);
+    function automatic logic [BANK_SEL_W-1:0] bank_sel(input logic [VPN_WIDTH-1:0] vpn);
         bank_sel = (NUM_BANKS == 1) ? '0 : vpn[BANK_SEL_W-1:0];
     endfunction
     /* verilator lint_on UNUSEDSIGNAL */
@@ -90,7 +89,7 @@ module l2_tlb_frontend
         .OUT_BUF    (2)           // per-bank capture / skid buffer
     ) req_xbar (
         .clk      (clk_i),
-        .reset    (~rstn_i),
+        .reset    (rst_i),
         .valid_in (src_req_valid),
         .data_in  (src_req_data),
         .sel_in   (src_bank_sel),
@@ -120,10 +119,10 @@ module l2_tlb_frontend
             .NUM_SRCS(NUM_REQS)
         ) tlb_bank (
             .clk_i      (clk_i),
-            .rstn_i     (rstn_i),
+            .rst_i      (rst_i),
             .req_valid_i(bank_req_valid[b]),
             .req_ready_o(bank_req_ready[b]),
-            .req_data_i (inter_tlb_req_data_t'(bank_req_data[b])),
+            .req_data_i (mmu_pkg::inter_tlb_req_data_t'(bank_req_data[b])),
             .req_src_i  (bank_src_id[b]),
             .rsp_valid_o(bank_rsp_valid[b]),
             .rsp_ready_i(bank_rsp_ready[b]),
@@ -140,7 +139,7 @@ module l2_tlb_frontend
         .NUM_PTWS (NUM_PTWS)
     ) ptw_scheduler (
         .clk_i    (clk_i),
-        .rstn_i   (rstn_i),
+        .rst_i    (rst_i),
         .bank_reqs(bank_ptw),
         .ptw_reqs (ptw_if)
     );
@@ -156,7 +155,7 @@ module l2_tlb_frontend
         .OUT_BUF    (2)
     ) rsp_xbar (
         .clk      (clk_i),
-        .reset    (~rstn_i),
+        .reset    (rst_i),
         .valid_in (bank_rsp_valid),
         .data_in  (bank_rsp_data),
         .sel_in   (bank_rsp_src),

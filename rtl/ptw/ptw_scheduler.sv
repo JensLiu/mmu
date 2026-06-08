@@ -16,37 +16,36 @@
 //   back-pressures; surplus PTW responses hold (their S_DONE waits on rsp_ready).
 //
 // The tag's named bank/slot fields (ptw_tag_t) keep the two ids from overlapping;
-// the only width assumption is BANK_ID_W <= PTW_TAG_BANK_W.
+// the only width assumption is BANK_ID_WIDTH <= PTW_TAG_BANK_W.
 // -----------------------------------------------------------------------------
 
-module ptw_scheduler
-    import mmu_pkg::*;
-#(
-    parameter int unsigned NUM_BANKS = 1,
-    parameter int unsigned NUM_PTWS  = 1
+module ptw_scheduler #(
+    parameter  int unsigned NUM_BANKS          = 1,
+    parameter  int unsigned NUM_PTWS           = 1,
+    localparam int unsigned BANK_ID_WIDTH      = (NUM_BANKS > 1) ? $clog2(NUM_BANKS) : 1,
+    localparam int unsigned PTW_ID_WIDTH       = (NUM_PTWS > 1) ? $clog2(NUM_PTWS) : 1,
+    localparam int unsigned PTW_TAG_BANK_WIDTH = mmu_pkg::PTW_TAG_BANK_WIDTH
 ) (
     input logic clk_i,
-    input logic rstn_i,
+    input logic rst_i,
 
     ptw_if.slave  bank_reqs[NUM_BANKS],
     ptw_if.master ptw_reqs [ NUM_PTWS]
 );
-    localparam int unsigned BANK_ID_W = (NUM_BANKS > 1) ? $clog2(NUM_BANKS) : 1;
-    localparam int unsigned PTW_ID_W = (NUM_PTWS > 1) ? $clog2(NUM_PTWS) : 1;
 
     // -------------------------------------------------------------------------
     // Unpack the interface arrays into flat vectors (dynamic indexing needs this)
     // -------------------------------------------------------------------------
     logic [NUM_BANKS-1:0] bank_req_valid, bank_req_ready;
-    ptw_req_data_t [NUM_BANKS-1:0] bank_req_data;
+    mmu_pkg::ptw_req_data_t [NUM_BANKS-1:0] bank_req_data;
     logic [NUM_BANKS-1:0] bank_rsp_valid, bank_rsp_ready;
-    ptw_rsp_data_t [NUM_BANKS-1:0] bank_rsp_data;
+    mmu_pkg::ptw_rsp_data_t [NUM_BANKS-1:0] bank_rsp_data;
 
     logic [NUM_PTWS-1:0] ptw_req_valid, ptw_req_ready;
-    ptw_req_data_t [NUM_PTWS-1:0] ptw_req_data;
+    mmu_pkg::ptw_req_data_t [NUM_PTWS-1:0] ptw_req_data;
     logic [NUM_PTWS-1:0] ptw_rsp_valid, ptw_rsp_ready;
-    ptw_rsp_data_t [NUM_PTWS-1:0] ptw_rsp_data;
-    logic          [NUM_PTWS-1:0] ptw_invalidate;
+    mmu_pkg::ptw_rsp_data_t [NUM_PTWS-1:0] ptw_rsp_data;
+    logic                   [NUM_PTWS-1:0] ptw_invalidate;
 
     for (genvar b = 0; b < NUM_BANKS; b++) begin : g_bank
         assign bank_req_valid[b]           = bank_reqs[b].req_valid;
@@ -72,9 +71,9 @@ module ptw_scheduler
     // Request: match one pending bank to one free PTW (one assignment / cycle)
     // -------------------------------------------------------------------------
     logic sel_bank_valid, sel_ptw_valid;
-    logic [BANK_ID_W-1:0] sel_bank;
-    logic [ PTW_ID_W-1:0] sel_ptw;
-    wire                  assign_fire = sel_bank_valid && sel_ptw_valid;
+    logic [BANK_ID_WIDTH-1:0] sel_bank;
+    logic [ PTW_ID_WIDTH-1:0] sel_ptw;
+    wire                      assign_fire = sel_bank_valid && sel_ptw_valid;
     always_comb begin
         sel_bank_valid = 1'b0;
         sel_bank       = '0;
@@ -83,20 +82,20 @@ module ptw_scheduler
         for (int i = 0; i < NUM_BANKS; i++)
         if (!sel_bank_valid && bank_req_valid[i]) begin
             sel_bank_valid = 1'b1;
-            sel_bank       = BANK_ID_W'(i);
+            sel_bank       = BANK_ID_WIDTH'(i);
         end
         for (int j = 0; j < NUM_PTWS; j++)
         if (!sel_ptw_valid && ptw_req_ready[j]) begin
             sel_ptw_valid = 1'b1;
-            sel_ptw       = PTW_ID_W'(j);
+            sel_ptw       = PTW_ID_WIDTH'(j);
         end
     end
 
     // selected bank's request with the bank id stamped into tag.bank
-    ptw_req_data_t sel_req;
+    mmu_pkg::ptw_req_data_t sel_req;
     always_comb begin
         sel_req          = bank_req_data[sel_bank];
-        sel_req.tag.bank = PTW_TAG_BANK_W'(sel_bank);
+        sel_req.tag.bank = PTW_TAG_BANK_WIDTH'(sel_bank);
     end
 
     always_comb begin
@@ -113,22 +112,22 @@ module ptw_scheduler
     // -------------------------------------------------------------------------
     // Response: pick one PTW with a result, route to the bank named in its tag
     // -------------------------------------------------------------------------
-    logic                rsp_valid;
-    logic [PTW_ID_W-1:0] rsp_ptw;
+    logic                    rsp_valid;
+    logic [PTW_ID_WIDTH-1:0] rsp_ptw;
     always_comb begin
         rsp_valid = 1'b0;
         rsp_ptw   = '0;
         for (int j = 0; j < NUM_PTWS; j++)
         if (!rsp_valid && ptw_rsp_valid[j]) begin
             rsp_valid = 1'b1;
-            rsp_ptw   = PTW_ID_W'(j);
+            rsp_ptw   = PTW_ID_WIDTH'(j);
         end
     end
 
-    ptw_rsp_data_t                 sel_rsp;
-    logic          [BANK_ID_W-1:0] rsp_bank;
+    mmu_pkg::ptw_rsp_data_t                     sel_rsp;
+    logic                   [BANK_ID_WIDTH-1:0] rsp_bank;
     assign sel_rsp  = ptw_rsp_data[rsp_ptw];
-    assign rsp_bank = BANK_ID_W'(sel_rsp.tag.bank);  // self-routes by the stamped field
+    assign rsp_bank = BANK_ID_WIDTH'(sel_rsp.tag.bank);  // self-routes by the stamped field
 
     always_comb begin
         bank_rsp_valid = '0;
@@ -143,7 +142,7 @@ module ptw_scheduler
 
 `ifdef SIMULATION
     always_ff @(posedge clk_i)
-        if (rstn_i) begin
+        if (rst_i) begin
             if (rsp_valid)
                 assert (int'(rsp_bank) < NUM_BANKS)
                 else

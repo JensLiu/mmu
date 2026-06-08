@@ -23,22 +23,20 @@
 
 // Page-table walker.
 //
-// Walks the in-memory radix page table one level at a time, starting from the
-// SATP root, until it reaches a leaf PTE (or faults).  A Page Walk Cache (PWC)
-// short-circuits already-seen non-leaf levels.  Single outstanding walk; one
-// memory read per level.
-//
-//   S_READY -> S_REQ on a TLB request (latch req, seed the walk pointer)
-//   S_REQ   -> issue a PTE read (or skip it on a PWC hit); -> S_WAIT on req fire
-//   S_WAIT  -> on the PTE response: descend (table) / S_DONE (leaf) / S_ERROR
-//   S_DONE / S_ERROR -> hold the result until the TLB accepts it, then S_READY
-module ptw
-    import mmu_pkg::*;
-#(
-    parameter int unsigned XLEN = 64
+// Walks the radix page table from the SATP root to a leaf PTE (or a fault), one
+// memory read per level. A Page Walk Cache short-circuits seen non-leaf levels.
+// Single outstanding walk.
+module ptw #(
+    parameter  int unsigned XLEN            = 64,
+    localparam int unsigned LEVELS          = mmu_pkg::LEVELS,
+    localparam int unsigned PPN_WIDTH       = mmu_pkg::PPN_WIDTH,
+    localparam int unsigned VPN_WIDTH       = mmu_pkg::VPN_WIDTH,
+    localparam int unsigned VADDR_WIDTH     = mmu_pkg::VADDR_WIDTH,
+    localparam int unsigned PAGE_LVL_BITS   = mmu_pkg::PAGE_LVL_BITS,
+    localparam int unsigned LEVEL_CNT_WIDTH = $clog2(LEVELS)
 ) (
     input logic clk_i,
-    input logic rstn_i,
+    input logic rst_i,
 
     // L2 TLB request-response (unified ready/valid)
     ptw_if.slave ptw_if,
@@ -47,9 +45,8 @@ module ptw
     ptw_mem_if.ptw mem_if,
 
     // CSR interface
-    input csr_ptw_comm_t csr_ptw_comm_i
+    input mmu_pkg::csr_ptw_comm_t csr_ptw_comm_i
 );
-    localparam int unsigned LEVEL_CNT_W = $clog2(LEVELS);
 
     wire [63:0] mem_rsp_data = mem_if.rsp_data;
     wire        mem_rsp_valid = mem_if.rsp_valid;
@@ -68,25 +65,25 @@ module ptw
     } ptw_state_t;
     ptw_state_t current_state, next_state;
 
-    logic [LEVEL_CNT_W-1:0] count_q, count_d;  // current walk level (0 = root)
-    wire not_last_level = (count_q < LEVEL_CNT_W'(LEVELS - 1));
+    logic [LEVEL_CNT_WIDTH-1:0] count_q, count_d;  // current walk level (0 = root)
+    wire not_last_level = (count_q < LEVEL_CNT_WIDTH'(LEVELS - 1));
 
-    ptw_req_data_t req_q;  // latched TLB request
-    pte_t pte_q;  // latched PTE; pte_q.ppn doubles as the walk pointer
-    pte_t mem_pte;  // PTE decoded from the current memory response
+    mmu_pkg::ptw_req_data_t req_q;  // latched TLB request
+    mmu_pkg::pte_t pte_q;  // latched PTE; pte_q.ppn doubles as the walk pointer
+    mmu_pkg::pte_t mem_pte;  // PTE decoded from the current memory response
 
     wire ptw_ready = (current_state == S_READY);
 
     // Page Walk Cache lookup result (driven in the PWC section below).
     logic pwc_hit;
-    logic [PPN_SIZE-1:0] pwc_data;
+    logic [PPN_WIDTH-1:0] pwc_data;
 
     // -------------------------------------------------------------------------
     // VPN slice for the current level
     // -------------------------------------------------------------------------
     logic [PAGE_LVL_BITS-1:0] vpn_per_lvl[LEVELS-1:0];
     for (genvar lvl = 0; lvl < LEVELS; lvl++) begin : g_vpn_per_lvl
-        logic [VPN_SIZE-1:0] vpn_shifted;
+        logic [VPN_WIDTH-1:0] vpn_shifted;
         assign vpn_shifted      = (req_q.vpn >> ((LEVELS - lvl - 1) * PAGE_LVL_BITS));
         assign vpn_per_lvl[lvl] = vpn_shifted[PAGE_LVL_BITS-1:0];
     end
@@ -95,7 +92,7 @@ module ptw
     // -------------------------------------------------------------------------
     // Decode the PTE from the memory response
     // -------------------------------------------------------------------------
-    assign mem_pte.ppn = mem_rsp_data[10+:(PPN_SIZE)];
+    assign mem_pte.ppn = mem_rsp_data[10+:(PPN_WIDTH)];
     assign mem_pte.rfs = mem_rsp_data[9:8];
     assign mem_pte.d   = mem_rsp_data[7];
     assign mem_pte.a   = mem_rsp_data[6];
@@ -128,34 +125,33 @@ module ptw
     wire is_pte_leaf = mem_pte.v && (mem_pte.x || mem_pte.w || mem_pte.r);
 
     // N, PBMT and reserved bits must be zero; a non-leaf must not set D/A/U.
-    wire invalid_pte = ((mem_rsp_data >> (PPN_SIZE + 10)) != '0)
+    wire invalid_pte = ((mem_rsp_data >> (PPN_WIDTH + 10)) != '0)
                     || (is_pte_table && mem_pte.v && (mem_pte.d || mem_pte.a || mem_pte.u));
 
-    // Per-page capability: is_pte_<s|u><r|w|x>. u/!u selects a user vs supervisor
-    // page; uw/sw fold in the spec rule that W requires R.
-    wire is_pte_ur = is_pte_leaf && mem_pte.u && mem_pte.r;  // user-readable
-    wire is_pte_uw = is_pte_ur && mem_pte.w;  // user-writable (=> readable)
-    wire is_pte_ux = mem_pte.v && mem_pte.x && mem_pte.u;  // user-executable
-    wire is_pte_sr = is_pte_leaf && mem_pte.r && !mem_pte.u;  // supervisor-readable
-    wire is_pte_sw = is_pte_sr && mem_pte.w;  // supervisor-writable (=> readable)
-    wire is_pte_sx = mem_pte.v && mem_pte.x && !mem_pte.u;  // supervisor-executable
+    // page capability per {s|u}{r|w|x}; uw/sw fold in W=>R
+    wire is_pte_ur = is_pte_leaf && mem_pte.u && mem_pte.r;
+    wire is_pte_uw = is_pte_ur && mem_pte.w;
+    wire is_pte_ux = mem_pte.v && mem_pte.x && mem_pte.u;
+    wire is_pte_sr = is_pte_leaf && mem_pte.r && !mem_pte.u;
+    wire is_pte_sw = is_pte_sr && mem_pte.w;
+    wire is_pte_sx = mem_pte.v && mem_pte.x && !mem_pte.u;
 
     // -------------------------------------------------------------------------
     // PTE address for the current level: (walk_ppn << 12) + (vpn_lvl << log2(PTE))
     // -------------------------------------------------------------------------
-    logic [SIZE_VADDR:0] pte_addr;
+    logic [VADDR_WIDTH:0] pte_addr;
     logic [63:0] pte_addr_full;
     assign pte_addr_full = {
-        {(64 - (PPN_SIZE + PAGE_LVL_BITS + $clog2(XLEN / 8))) {1'b0}},
+        {(64 - (PPN_WIDTH + PAGE_LVL_BITS + $clog2(XLEN / 8))) {1'b0}},
         {pte_q.ppn, vpn_lvl, {{($clog2(XLEN / 8))} {1'b0}}}
     };
-    assign pte_addr = pte_addr_full[SIZE_VADDR:0];
+    assign pte_addr = pte_addr_full[VADDR_WIDTH:0];
 
     // -------------------------------------------------------------------------
     // Walk registers: latch the request, advance the walk pointer
     // -------------------------------------------------------------------------
     always_ff @(posedge clk_i) begin
-        if (!rstn_i) begin
+        if (rst_i) begin
             req_q <= '0;
             pte_q <= '0;
         end else if ((current_state == S_WAIT) && mem_rsp_valid) begin
@@ -164,7 +160,7 @@ module ptw
             pte_q.ppn <= pwc_data;  // PWC supplied the next pointer
         end else if (ptw_ready && ptw_if.req_valid) begin
             req_q     <= ptw_if.req_data;  // new walk: seed from SATP
-            pte_q.ppn <= csr_ptw_comm_i.satp[PPN_SIZE-1:0];
+            pte_q.ppn <= csr_ptw_comm_i.satp[PPN_WIDTH-1:0];
         end
     end
 
@@ -179,7 +175,7 @@ module ptw
     logic pwc_read_ready, pwc_read_hit;
     ptw_cache ptw_cache_inst (
         .clk_i        (clk_i),
-        .rstn_i       (rstn_i),
+        .rst_i        (rst_i),
         .read_valid_i (current_state == S_REQ),
         .read_ready_o (pwc_read_ready),
         .read_is_hit_o(pwc_read_hit),
@@ -237,7 +233,7 @@ module ptw
     // state will drive PTW_MEM_WRITE / PTW_MEM_AMO_OR with req_wdata).
     // -------------------------------------------------------------------------
     assign mem_if.req_addr  = pte_addr;
-    assign mem_if.req_cmd   = PTW_MEM_READ;
+    assign mem_if.req_cmd   = mmu_pkg::PTW_MEM_READ;
     assign mem_if.req_wdata = '0;
     assign mem_if.rsp_ready = 1'b1;  // single outstanding; always accept the response
 
@@ -249,23 +245,23 @@ module ptw
 
     // Leaf PPN base = pte_addr >> 12 (equals the leaf PTE's PPN, since the
     // vpn_lvl<<log2(PTE) term lives entirely in the low 12 bits).
-    wire [63:0] leaf_ppn_base = {{(64 - (SIZE_VADDR - 11)) {1'b0}}, pte_addr[SIZE_VADDR:12]};
+    wire [63:0] leaf_ppn_base = {{(64 - (VADDR_WIDTH - 11)) {1'b0}}, pte_addr[VADDR_WIDTH:12]};
 
     // For a leaf found at level j, the low SUPER_BITS come from the VPN and the
     // upper bits from the PTE's PPN (superpage); the deepest level (SUPER_BITS=0)
     // uses the PPN as-is. Mirrors l1_tlb's PPN assembly.
-    logic [PPN_SIZE-1:0] resp_ppn_per_lvl[LEVELS-1:0];
+    logic [PPN_WIDTH-1:0] resp_ppn_per_lvl[LEVELS-1:0];
     for (genvar j = 0; j < LEVELS; j++) begin : g_resp_ppn_per_lvl
         localparam int unsigned SUPER_BITS = (LEVELS - j - 1) * PAGE_LVL_BITS;
         if (SUPER_BITS == 0) begin : g_leaf
-            assign resp_ppn_per_lvl[j] = leaf_ppn_base[PPN_SIZE-1:0];
+            assign resp_ppn_per_lvl[j] = leaf_ppn_base[PPN_WIDTH-1:0];
         end else begin : g_super
             assign resp_ppn_per_lvl[j] = {
-                leaf_ppn_base[PPN_SIZE-1 : SUPER_BITS], req_q.vpn[SUPER_BITS-1 : 0]
+                leaf_ppn_base[PPN_WIDTH-1 : SUPER_BITS], req_q.vpn[SUPER_BITS-1 : 0]
             };
         end
     end
-    wire [PPN_SIZE-1:0] resp_ppn = resp_ppn_per_lvl[count_q];
+    wire [PPN_WIDTH-1:0] resp_ppn = resp_ppn_per_lvl[count_q];
 
     // tag echoed from the latched request; invalidate broadcast on a CSR flush.
     assign ptw_if.rsp_valid        = resp_valid;
@@ -289,7 +285,7 @@ module ptw
     // FSM
     // -------------------------------------------------------------------------
     always_ff @(posedge clk_i) begin
-        if (!rstn_i) begin
+        if (rst_i) begin
             current_state <= S_READY;
             count_q       <= '0;
         end else begin
@@ -310,7 +306,7 @@ module ptw
             S_REQ: begin
                 if (pwc_skip) begin
                     // Cached non-leaf pointer: descend without a memory read.
-                    count_d    = count_q + LEVEL_CNT_W'(1);
+                    count_d    = count_q + LEVEL_CNT_WIDTH'(1);
                     next_state = S_REQ;
                 end else begin
                     mem_if.req_valid = 1'b1;
@@ -322,7 +318,7 @@ module ptw
                 if (mem_rsp_valid) begin
                     if (invalid_pte || mem_rsp_error) next_state = S_ERROR;
                     else if (is_pte_table && not_last_level) begin
-                        count_d    = count_q + LEVEL_CNT_W'(1);  // descend
+                        count_d    = count_q + LEVEL_CNT_WIDTH'(1);  // descend
                         next_state = S_REQ;
                     end else if (is_pte_leaf) next_state = S_DONE;
                     else next_state = S_ERROR;

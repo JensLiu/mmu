@@ -19,23 +19,21 @@
  */
 
 
-module mmu
-    import mmu_pkg::*;
-#(
+module mmu #(
     parameter int unsigned XLEN               = 32,
     parameter int unsigned NUM_CORES          = 1,
     parameter int unsigned NUM_DTLBS_PER_CORE = 1,
     parameter int unsigned L1_TLB_ENTRIES     = 16
 ) (
     input logic clk_i,
-    input logic rstn_i,
+    input logic rst_i,
 
     // iTLB / dTLB request-response (per-port handshake interfaces)
-    core_tlb_if.slave itlb_core_if[NUM_CORES],
+    core_tlb_if.slave itlb_core_if[                     NUM_CORES],
     core_tlb_if.slave dtlb_core_if[NUM_CORES * NUM_DTLBS_PER_CORE],
 
     // CSR interface
-    input csr_ptw_comm_t csr_ptw_comm_i,
+    input mmu_pkg::csr_ptw_comm_t csr_ptw_comm_i,
 
     // PTW - Memory Interface (ready/valid)
     ptw_mem_if.ptw ptw_mem_if
@@ -59,7 +57,7 @@ module mmu
             .TLB_ENTRIES  (L1_TLB_ENTRIES)
         ) l1_itlb_inst (
             .clk_i  (clk_i),
-            .rstn_i (rstn_i),
+            .rst_i  (rst_i),
             .core_if(itlb_core_if[i+:1]),
             .l2_if  (l1_l2_links[i*2])
         );
@@ -72,7 +70,7 @@ module mmu
             .TLB_ENTRIES  (L1_TLB_ENTRIES)
         ) l1_dtlb_inst (
             .clk_i  (clk_i),
-            .rstn_i (rstn_i),
+            .rst_i  (rst_i),
             .core_if(dtlb_core_if[i*NUM_DTLBS_PER_CORE+:NUM_DTLBS_PER_CORE]),
             .l2_if  (l1_l2_links[i*2+1])
         );
@@ -82,14 +80,14 @@ module mmu
     // response gather. NUM_BANKS = 1 today; bump it to bank by VPN.
     // The bank's CAM is single-ported - no NUM_CORES-wide parallel lookup.
     l2_tlb_frontend #(
-        .NUM_REQS   (2 * NUM_CORES),
-        .NUM_BANKS  (4),
-        .NUM_PTWS   (NUM_PTWS)
+        .NUM_REQS (2 * NUM_CORES),
+        .NUM_BANKS(4),
+        .NUM_PTWS (NUM_PTWS)
     ) l2_tlb_frontend_inst (
-        .clk_i        (clk_i),
-        .rstn_i       (rstn_i),
-        .l1_l2_if     (l1_l2_links),
-        .ptw_if       (ptw_link)
+        .clk_i   (clk_i),
+        .rst_i   (rst_i),
+        .l1_l2_if(l1_l2_links),
+        .ptw_if  (ptw_link)
     );
 
 
@@ -97,11 +95,11 @@ module mmu
     ptw #(
         .XLEN(XLEN)
     ) ptw_inst (
-        .clk_i          (clk_i),
-        .rstn_i         (rstn_i),
-        .ptw_if(ptw_link[0]),
+        .clk_i         (clk_i),
+        .rst_i         (rst_i),
+        .ptw_if        (ptw_link[0]),
         // memory interface
-        .mem_if(ptw_mem_if),
+        .mem_if        (ptw_mem_if),
         // csr interface
         .csr_ptw_comm_i(csr_ptw_comm_i)
     );

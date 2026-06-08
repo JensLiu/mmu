@@ -30,35 +30,35 @@
 module ptw_cache
     import mmu_pkg::*;
 #(
-    parameter int unsigned NUM_ENTRIES = PTW_CACHE_SIZE,
-    parameter int unsigned TAG_W       = SIZE_VADDR + 1,
-    parameter int unsigned DATA_W      = PPN_SIZE
+    parameter int unsigned NUM_ENTRIES = mmu_pkg::PTW_CACHE_SIZE,
+    parameter int unsigned TAG_WIDTH   = mmu_pkg::VADDR_WIDTH + 1,
+    parameter int unsigned DATA_WIDTH  = mmu_pkg::PPN_WIDTH
 ) (
     input logic clk_i,
-    input logic rstn_i,
+    input logic rst_i,
 
     // Read (combinational lookup by PTE physical address)
-    input  logic              read_valid_i,
-    output logic              read_ready_o,
-    output logic              read_is_hit_o,
-    input  logic [ TAG_W-1:0] read_tag_i,
-    output logic [DATA_W-1:0] read_data_o,
+    input  logic                  read_valid_i,
+    output logic                  read_ready_o,
+    output logic                  read_is_hit_o,
+    input  logic [ TAG_WIDTH-1:0] read_tag_i,
+    output logic [DATA_WIDTH-1:0] read_data_o,
 
     // Write (install a page-table pointer)
-    input  logic              write_valid_i,
-    output logic              write_ready_o,
-    input  logic [ TAG_W-1:0] write_tag_i,
-    input  logic [DATA_W-1:0] write_data_i,
+    input  logic                  write_valid_i,
+    output logic                  write_ready_o,
+    input  logic [ TAG_WIDTH-1:0] write_tag_i,
+    input  logic [DATA_WIDTH-1:0] write_data_i,
 
     // Clear (flush all valid entries)
     input  logic clear_valid_i,
     output logic clear_ready_o
 );
-    localparam int unsigned IDX_W = (NUM_ENTRIES > 1) ? $clog2(NUM_ENTRIES) : 1;
+    localparam int unsigned IDX_WIDTH = (NUM_ENTRIES > 1) ? $clog2(NUM_ENTRIES) : 1;
 
-    logic              valid_q[NUM_ENTRIES];
-    logic [ TAG_W-1:0] tag_q  [NUM_ENTRIES];
-    logic [DATA_W-1:0] data_q [NUM_ENTRIES];
+    logic                  valid_q[NUM_ENTRIES];
+    logic [ TAG_WIDTH-1:0] tag_q  [NUM_ENTRIES];
+    logic [DATA_WIDTH-1:0] data_q [NUM_ENTRIES];
 
     logic [NUM_ENTRIES-1:0] valid_vec, hit_vec, write_match_vec;
     always_comb begin
@@ -75,48 +75,48 @@ module ptw_cache
     assign clear_ready_o = 1'b1;
 
     // Read hit + data (lowest matching index; de-dup keeps tags unique).
-    logic [IDX_W-1:0] hit_idx;
+    logic [IDX_WIDTH-1:0] hit_idx;
     always_comb begin
         hit_idx = '0;
-        for (int i = NUM_ENTRIES - 1; i >= 0; i--) if (hit_vec[i]) hit_idx = IDX_W'(i);
+        for (int i = NUM_ENTRIES - 1; i >= 0; i--) if (hit_vec[i]) hit_idx = IDX_WIDTH'(i);
     end
     assign read_is_hit_o = |hit_vec;
     assign read_data_o   = data_q[hit_idx];
 
     // PLRU: update only on a read-hit access (matches the original behaviour).
-    logic [IDX_W-1:0] plru_victim;
-    wire              read_fire_hit = read_valid_i && read_ready_o && read_is_hit_o;
+    logic [IDX_WIDTH-1:0] plru_victim;
+    wire                  read_fire_hit = read_valid_i && read_ready_o && read_is_hit_o;
     pseudoLRU #(
         .ENTRIES(NUM_ENTRIES)
     ) ptw_plru (
         .clk_i            (clk_i),
-        .rstn_i           (rstn_i),
+        .rst_i            (rst_i),
         .access_hit_i     (read_fire_hit),
         .access_idx_i     (hit_idx),
         .replacement_idx_o(plru_victim)
     );
 
     // Victim: overwrite a matching tag (de-dup) -> invalid slot -> PLRU victim.
-    logic [IDX_W-1:0] match_idx, free_idx;
-    logic             free_found;
+    logic [IDX_WIDTH-1:0] match_idx, free_idx;
+    logic free_found;
     always_comb begin
         match_idx  = '0;
         free_idx   = '0;
         free_found = 1'b0;
         for (int i = NUM_ENTRIES - 1; i >= 0; i--) begin
-            if (write_match_vec[i]) match_idx = IDX_W'(i);
+            if (write_match_vec[i]) match_idx = IDX_WIDTH'(i);
             if (!valid_vec[i]) begin
-                free_idx   = IDX_W'(i);
+                free_idx   = IDX_WIDTH'(i);
                 free_found = 1'b1;
             end
         end
     end
-    wire [IDX_W-1:0] victim_idx = (|write_match_vec) ? match_idx
+    wire [IDX_WIDTH-1:0] victim_idx = (|write_match_vec) ? match_idx
                                 : free_found         ? free_idx
                                                      : plru_victim;
 
     always_ff @(posedge clk_i) begin
-        if (!rstn_i) begin
+        if (rst_i) begin
             for (int i = 0; i < NUM_ENTRIES; i++) valid_q[i] <= 1'b0;
         end else if (clear_valid_i) begin
             // Flush; clear wins over a coincident write (the write is dropped).

@@ -22,7 +22,7 @@ module VX_mmu #(
     core_tlb_if itlb_core_if[NUM_ITLB_PORTS] ();
     core_tlb_if dtlb_core_if[NUM_DTLB_PORTS] ();
     // CSR Interface
-    mmu_pkg::csr_ptw_comm_t  csr_ptw_comm_i;
+    mmu_pkg::csr_ptw_comm_t csr_ptw_comm_i;
     // TODO: currently only support RV32
     assign csr_ptw_comm_i.satp    = {{(64 - `XLEN) {1'b0}}, csr_mmu_if.satp};  // < zero-extend satp
     assign csr_ptw_comm_i.flush   = csr_mmu_if.flush_tlb;
@@ -37,13 +37,13 @@ module VX_mmu #(
         .NUM_CORES         (NUM_CORES),
         .XLEN              (`XLEN)
     ) mmu_inst (
-        .clk_i       (clk),
-        .rstn_i      (~reset),
-        .itlb_core_if(itlb_core_if),
-        .dtlb_core_if(dtlb_core_if),
+        .clk_i         (clk),
+        .rst_i         (reset),
+        .itlb_core_if  (itlb_core_if),
+        .dtlb_core_if  (dtlb_core_if),
         .csr_ptw_comm_i(csr_ptw_comm_i),
         // currently, we only support 1 PTW port
-        .ptw_mem_if(ptw_mem_link[0])
+        .ptw_mem_if    (ptw_mem_link[0])
     );
 
     tlb_vxcore_adapter #(

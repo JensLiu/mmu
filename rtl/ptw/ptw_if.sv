@@ -1,18 +1,38 @@
-// -----------------------------------------------------------------------------
-// L2 TLB <-> PTW interface (unified ready/valid, mirrors l1_l2_if).
-//   req : TLB -> PTW   (issue a walk; carries a tag)
-//   rsp : PTW -> TLB   (walk result; echoes the tag)
+/*
+ * Copyright 2025 BSC*
+ * *Barcelona Supercomputing Center (BSC)
+ *
+ * SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+ *
+ * Licensed under the Solderpad Hardware License v 2.1 (the "License"); you
+ * may not use this file except in compliance with the License, or, at your
+ * option, the Apache License version 2.0. You may obtain a copy of the
+ * License at
+ *
+ * https://solderpad.org/licenses/SHL-2.1/
+ *
+ * Unless required by applicable law or agreed to in writing, any work
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
+ */
+
+// ---------------------------------------------------------
+// L2 TLB <-> PTW interface (unified ready/valid).
+//   req            : TLB -> PTW (issue a walk; carries a tag)
+//   rsp            : PTW -> TLB (walk result; echoes the tag)
 //   invalidate_tlb : broadcast flush PTW -> TLB (sideband, not request-matched)
-// -----------------------------------------------------------------------------
+// ---------------------------------------------------------
 interface ptw_if;
 
-    logic                    req_valid, req_ready;
+    logic                   req_valid, req_ready;
     mmu_pkg::ptw_req_data_t  req_data;
 
-    logic                    rsp_valid, rsp_ready;
+    logic                   rsp_valid, rsp_ready;
     mmu_pkg::ptw_rsp_data_t  rsp_data;
 
-    logic                    invalidate_tlb;
+    logic                   invalidate_tlb;
 
     // TLB side: drives requests, consumes responses.
     modport master (

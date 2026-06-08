@@ -15,38 +15,20 @@
 
 // L1 TLB request + deliver engine.
 //
-// Receives every port's effective miss and request payload, arbitrates one
-// miss at a time onto a single fire-once L2 walk, latches the in-flight
-// {vpn,asid}, and on the L2 response either fills the CAM (success) or delivers
-// a page fault to every coalesced requester (error).  There is only ever one
-// walk outstanding, so a port whose effective miss matches the latched in-flight
-// key is NOT re-walked (coalescing); the match also lets a fault reach all such
-// ports even though nothing was written to the CAM.
-//
-// Why a fault needs explicit, acknowledged delivery: a successful translation is
-// written to the CAM and is re-derivable every cycle, so it self-heals under
-// backpressure.  A page fault has no CAM backing - it is a one-shot event.  So
-// on an error response we capture the coalesced faulting ports into a bitmap,
-// hold fault_valid_o for each until it is acknowledged via rsp_ready_i, and
-// block the next walk until the bitmap drains.  (The core ties ready=1 today,
-// so this drains in one cycle, but the handshake exists for correctness.)
-//
-//   PS_IDLE     -> PS_GET_MISS when the arbiter has a grant (and not draining)
-//   PS_GET_MISS -> PS_SEND, latching the granted port
-//   PS_SEND     -> PS_WAIT_RESPONSE on req fire; -> PS_IDLE on squash / TLBI
-//   PS_WAIT_RESPONSE -> PS_IDLE + fill on a success response
-//                    -> PS_FAULT_DRAIN on an error response
-//                    -> PS_INVALIDATED_WAIT_RESPONSE on a TLBI
-//   PS_FAULT_DRAIN -> PS_IDLE once every faulting port has acknowledged
-//   PS_INVALIDATED_WAIT_RESPONSE -> PS_IDLE on response (drop the stale fill)
+// Arbitrates one effective miss at a time onto a single fire-once L2 walk and,
+// on the response, fills the CAM (success) or delivers a page fault (error).
+//  - one walk outstanding; a miss aliased to the latched in-flight {vpn,asid}
+//    is not re-walked (coalescing) and shares its result/fault.
+//  - faults are held per-port until acknowledged (rsp_ready_i) and block the
+//    next walk until drained (a fault has no CAM backing to re-derive).
 module l1_tlb_request_engine
     import mmu_pkg::*;
 #(
     parameter  int unsigned NUM_TLB_PORTS = 1,
-    localparam int unsigned PORT_IDX_W    = (NUM_TLB_PORTS > 1) ? $clog2(NUM_TLB_PORTS) : 1
+    localparam int unsigned PORT_IDX_WIDTH    = (NUM_TLB_PORTS > 1) ? $clog2(NUM_TLB_PORTS) : 1
 ) (
     input logic clk_i,
-    input logic rstn_i,
+    input logic rst_i,
 
     // Per-port effective miss + request payload. req_data_i[p].set_dirty_bit
     // carries this port's store-ness (used for the coalesced dirty walk).
@@ -57,8 +39,8 @@ module l1_tlb_request_engine
     // in-flight request; the rest of the entry from the L2 response.
     output logic                       fill_valid_o,
     output tlb_entry_t                 fill_entry_o,
-    output logic       [ VPN_SIZE-1:0] fill_vpn_o,
-    output logic       [ASID_SIZE-1:0] fill_asid_o,
+    output logic       [ VPN_WIDTH-1:0] fill_vpn_o,
+    output logic       [ASID_WIDTH-1:0] fill_asid_o,
 
     input  logic [NUM_TLB_PORTS-1:0] rsp_ready_i,  // core ready to accept fault delivery
     // Per-port PTW page-fault delivery, held until acknowledged.
@@ -90,7 +72,7 @@ module l1_tlb_request_engine
     // of the transaction.  Sticky keeps grant_index stable on the granted port
     // until it stops missing (served / faulted+acked).
     // -------------------------------------------------------------------------
-    logic [PORT_IDX_W-1:0] grant_index;
+    logic [PORT_IDX_WIDTH-1:0] grant_index;
     logic                  grant_valid;
     wire                   grant_ready = (req_state == PS_IDLE);
 
@@ -100,7 +82,7 @@ module l1_tlb_request_engine
         .STICKY  (1)
     ) miss_arbiter (
         .clk        (clk_i),
-        .reset      (~rstn_i),
+        .reset      (rst_i),
         .requests   (eff_miss_i),
         `UNUSED_PIN(grant_onehot),
         .grant_index(grant_index),
@@ -109,10 +91,10 @@ module l1_tlb_request_engine
     );
 
     // Latched granted port, valid from PS_SEND onwards.
-    logic [PORT_IDX_W-1:0] port_idx_q;
+    logic [PORT_IDX_WIDTH-1:0] port_idx_q;
     // Clamp for the single-port case (--x-initial can init a 1-bit reg to 1,
     // an out-of-bounds index before the synchronous reset takes effect).
-    wire  [PORT_IDX_W-1:0] port_idx = (NUM_TLB_PORTS == 1) ? '0 : port_idx_q;
+    wire  [PORT_IDX_WIDTH-1:0] port_idx = (NUM_TLB_PORTS == 1) ? '0 : port_idx_q;
 
     // -------------------------------------------------------------------------
     // Register the L2 response. rsp_ready=1: the engine is one-outstanding, so
@@ -124,7 +106,7 @@ module l1_tlb_request_engine
     inter_tlb_rsp_data_t rsp_data_q;
     logic                invalidate_q;
     always_ff @(posedge clk_i) begin
-        if (!rstn_i) begin
+        if (rst_i) begin
             rsp_valid_q  <= 1'b0;
             invalidate_q <= 1'b0;
         end else begin
@@ -140,8 +122,8 @@ module l1_tlb_request_engine
     // In-flight key: latched when the walk fires; used to coalesce same-VPN
     // ports and to route the fault to them.
     // -------------------------------------------------------------------------
-    logic [     VPN_SIZE-1:0] inflight_vpn_q;
-    logic [    ASID_SIZE-1:0] inflight_asid_q;
+    logic [     VPN_WIDTH-1:0] inflight_vpn_q;
+    logic [    ASID_WIDTH-1:0] inflight_asid_q;
 
     logic [NUM_TLB_PORTS-1:0] inflight_match;
     for (genvar p = 0; p < NUM_TLB_PORTS; p++) begin : g_inflight_match
@@ -189,7 +171,7 @@ module l1_tlb_request_engine
         req_state_n   = req_state;
         write_tlb     = 1'b0;
         fault_capture = 1'b0;
-        if (!rstn_i) begin
+        if (rst_i) begin
             req_state_n = PS_IDLE;
         end else begin
             case (req_state)
@@ -254,7 +236,7 @@ module l1_tlb_request_engine
     end
 
     always_ff @(posedge clk_i) begin
-        if (!rstn_i) begin
+        if (rst_i) begin
             req_state     <= PS_IDLE;
             fault_pending <= '0;
             port_idx_q    <= '0;
@@ -269,7 +251,7 @@ module l1_tlb_request_engine
 
     // Latch the in-flight key when the walk fires.
     always_ff @(posedge clk_i) begin
-        if (!rstn_i) begin
+        if (rst_i) begin
             inflight_vpn_q  <= '0;
             inflight_asid_q <= '0;
         end else if (req_fire) begin

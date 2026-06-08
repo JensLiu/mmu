@@ -24,12 +24,12 @@ module tlb_vxcore_adapter #(
     // ---------------------------------------------------------------------------
 
     // Extract virtual page number from a full VA.
-    // BSC req.vpn is [VPN_SIZE:0] = 28 bits (SV39-sized).
+    // BSC req.vpn is [VPN_WIDTH:0] = 28 bits (SV39-sized).
     // Vortex SV32 VPN = VA[31:12] = 20 bits; SV39 VPN = VA[38:12] = 27 bits.
     // Upper bits are zero-padded via a local variable initialised to '0.
-    /* verilator lint_off UNUSEDSIGNAL */  // in case VPN_SIZE+1 is not a multiple of 4
-    function automatic logic [mmu_pkg::VPN_SIZE-1:0] va2vpn(input logic [`XLEN-1:0] va);
-        logic [mmu_pkg::VPN_SIZE-1:0] vpn;
+    /* verilator lint_off UNUSEDSIGNAL */  // in case VPN_WIDTH+1 is not a multiple of 4
+    function automatic logic [mmu_pkg::VPN_WIDTH-1:0] va2vpn(input logic [`XLEN-1:0] va);
+        logic [mmu_pkg::VPN_WIDTH-1:0] vpn;
         vpn                                = '0;
         vpn[`XLEN-`MEM_PAGE_LOG2_SIZE-1:0] = va[`XLEN-1:`MEM_PAGE_LOG2_SIZE];
         return vpn;
@@ -41,10 +41,10 @@ module tlb_vxcore_adapter #(
     endfunction
 
     // Reconstruct a physical address from the BSC PPN response and the page offset.
-    // BSC PPN is PPN_SIZE=44 bits; Vortex only uses the low
+    // BSC PPN is PPN_WIDTH=44 bits; Vortex only uses the low
     // (MEM_ADDR_WIDTH - MEM_PAGE_LOG2_SIZE) bits (20 bits for XLEN=32, 36 for XLEN=64).
     function automatic logic [`MEM_ADDR_WIDTH-1:0] ppn2pa(
-        input logic [mmu_pkg::PPN_SIZE-1:0] ppn, input logic [`MEM_PAGE_LOG2_SIZE-1:0] offset);
+        input logic [mmu_pkg::PPN_WIDTH-1:0] ppn, input logic [`MEM_PAGE_LOG2_SIZE-1:0] offset);
         return {ppn[`MEM_ADDR_WIDTH-`MEM_PAGE_LOG2_SIZE-1:0], offset};
     endfunction
     /* verilator lint_on UNUSEDSIGNAL */
