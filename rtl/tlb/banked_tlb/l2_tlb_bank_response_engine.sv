@@ -1,19 +1,3 @@
-// -----------------------------------------------------------------------------
-// MSHR response engine: a single-buffered, N-destination broadcast serializer.
-//
-// Two valid/ready load sources feed one held group (mask + payload); the engine
-// drains the group one core per cycle onto the bank response port.
-//   - mshr_deliver : a whole coalesced set of cores in ONE handshake (priority)
-//   - tlb_hit      : a single core (a direct store/cache hit)
-//
-// The engine is payload-opaque: both sources hand it a fully-formed
-// l2_l1_rsp_data_t, so it never touches PTEs or the cache.  The hit's back-
-// pressure is just its `ready` - the bank forwards tlb_hit_ready_o to its own
-// req_ready_o, so request acceptance is a clean handshake, not a side effect.
-//
-// Deliver has strict priority: its ready is asserted whenever the engine is
-// free; the hit's ready additionally requires that no deliver is offered.
-// -----------------------------------------------------------------------------
 
 module l2_tlb_bank_response_engine
     import mmu_pkg::*;

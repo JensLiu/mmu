@@ -1,5 +1,5 @@
 /*
- * Copyright 2025 BSC*
+ * Copyright 2026 BSC*
  * *Barcelona Supercomputing Center (BSC)
  *
  * SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
@@ -18,7 +18,6 @@
  * under the License.
  */
 
-// L1 <-> L2 TLB interface (unified ready/valid).
 interface inter_tlb_if;
 
     logic                         req_valid, req_ready;

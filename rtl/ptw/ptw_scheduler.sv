@@ -1,23 +1,3 @@
-// -----------------------------------------------------------------------------
-// PTW scheduler: matches bank walk requests to free PTWs and routes responses
-// back. Stateless - the response self-routes via a {bank_id, slot} tag.
-//
-//   bank_reqs[NUM_BANKS] (.ptw)  : the scheduler is the PTW toward each bank
-//   ptw_reqs [NUM_PTWS]  (.tlb)  : the scheduler is the TLB toward each PTW
-//
-// Interface arrays cannot be indexed by a dynamic variable, so the arrays are
-// first unpacked into flat vectors (genvar), the arbitration runs on the flat
-// vectors, and the results are repacked.
-//
-// Request : one assignment per cycle - pick a bank with a pending request and a
-//   free PTW, forward the request, and stamp the bank id into tag.bank.
-// Response: one delivery per cycle - pick a PTW with a response and route it to
-//   the bank named in tag.bank.  Bank fills are always ready, so this never
-//   back-pressures; surplus PTW responses hold (their S_DONE waits on rsp_ready).
-//
-// The tag's named bank/slot fields (ptw_tag_t) keep the two ids from overlapping;
-// the only width assumption is BANK_ID_WIDTH <= PTW_TAG_BANK_W.
-// -----------------------------------------------------------------------------
 
 module ptw_scheduler #(
     parameter  int unsigned NUM_BANKS          = 1,

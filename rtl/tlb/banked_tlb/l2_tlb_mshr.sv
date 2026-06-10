@@ -1,41 +1,3 @@
-// -----------------------------------------------------------------------------
-// L2 TLB MSHR - two-pass (clean / dirty), result-carrying, multi-PTW friendly.
-//
-// Four backpressured handshakes; no separate release port (deliver folds it in):
-//   allocate (valid_i/ready_o) : bank -> MSHR. Coalesce on CAM hit, else open a
-//                                slot.  ready_o = (hit || !full) && !deliver_fire.
-//   issue    (valid_o/ready_i) : MSHR -> PTW.  One port feeds K PTWs over cycles.
-//   fill     (valid_i/ready_o) : PTW  -> MSHR.  PTW HOLDS its result until taken,
-//                                so there is no un-backpressurable pulse to buffer.
-//   deliver  (valid_o/ready_i) : MSHR -> deliver engine.  Snapshot + state advance.
-//
-// Lifecycle (one 3-phase pipeline run up to twice):
-//   INVALID -alloc-> CLEAN_ISSUE -issue-> CLEAN_FILL -fill-> CLEAN_DELIVER
-//     CLEAN_DELIVER, not poisoned : deliver pending_cores, write cache, -> INVALID
-//     CLEAN_DELIVER, poisoned     : deliver pending_cores, NO cache write,
-//                                   -> DIRTY_ISSUE; pending_cores<=dirty_cores;
-//                                      dirty_cores<=0; set_dirty<=1; dirty_poison<=0
-//   DIRTY_ISSUE -issue-> DIRTY_FILL -fill-> DIRTY_DELIVER
-//     DIRTY_DELIVER : deliver pending_cores, write cache (dirty), -> INVALID
-//   DIRTY_* always carries set_dirty=1, so the dirty walk returns a dirty PTE and
-//   the slot is never poisoned twice.
-//
-// Dirty poison (a store needing the dirty bit, coalescing onto a clean walk):
-//   A store coalescing onto CLEAN_FILL/CLEAN_DELIVER with set_dirty=0 is held in
-//   dirty_cores (not delivered with the clean PTE) and flags dirty_poison.  At the
-//   clean deliver the slot recirculates for one dirty walk, and dirty_cores becomes
-//   the next deliver set.  Corner cases (a 2nd store in the same clean window, or a
-//   store coalescing the exact cycle of reap) fall through to pending_cores and get
-//   the clean PTE; the L1 store_hit check rejects it and re-requests, so the bank's
-//   store-to-clean path re-walks it.  No double delivery, no stale dirty - just an
-//   extra round-trip for that rare store.
-//
-// Snapshot/coalesce race: a coalesce landing the same cycle a deliver snapshots a
-// slot would be lost (the snapshot reads the pre-coalesce mask, then the slot is
-// freed or its mask overwritten).  Resolved by dropping allocate.ready on every
-// deliver_fire, so no CAM write commits during a snapshot (this also removes the
-// alloc/free same-slot collision).
-// -----------------------------------------------------------------------------
 
 module l2_tlb_mshr #(
     parameter  int unsigned MSHR_SIZE    = 4,
@@ -55,7 +17,6 @@ module l2_tlb_mshr #(
     input  logic [   VPN_WIDTH-1:0] allocate_vpn_i,
     input  logic [  ASID_WIDTH-1:0] allocate_asid_i,
     input  logic                    allocate_set_dirty_i,  // store (needs dirty)
-    input  logic [             1:0] allocate_prv_i,
     input  logic [CORE_ID_SIZE-1:0] allocate_core_id_i,
 
     // Issue (to PTW)
@@ -65,7 +26,6 @@ module l2_tlb_mshr #(
     output logic [ VPN_WIDTH-1:0] issue_vpn_o,
     output logic [ASID_WIDTH-1:0] issue_asid_o,
     output logic                  issue_set_dirty_o,
-    output logic [           1:0] issue_prv_o,
 
     // Fill (from PTW, keyed by tag)
     input  logic                           fill_valid_i,
@@ -108,7 +68,6 @@ module l2_tlb_mshr #(
         logic [VPN_WIDTH-1:0]  vpn;
         logic [ASID_WIDTH-1:0] asid;
         logic                  set_dirty;
-        logic [1:0]            prv;
         logic                  dirty_poison;
         logic [NUM_CORES-1:0]  pending_cores;  // delivered this pass
         logic [NUM_CORES-1:0]  dirty_cores;    // held stores, become the next pass
@@ -173,12 +132,13 @@ module l2_tlb_mshr #(
         `UNUSED_PIN(onehot_out)
     );
 
-    assign issue_valid_o     = issue_valid;
-    assign issue_id_o        = issue_id;
-    assign issue_vpn_o       = mshr_entries[issue_id].vpn;
-    assign issue_asid_o      = mshr_entries[issue_id].asid;
-    assign issue_set_dirty_o = mshr_entries[issue_id].set_dirty;
-    assign issue_prv_o       = mshr_entries[issue_id].prv;
+    assign issue_valid_o = issue_valid;
+    assign issue_id_o = issue_id;
+    assign issue_vpn_o = mshr_entries[issue_id].vpn;
+    assign issue_asid_o = mshr_entries[issue_id].asid;
+    assign issue_set_dirty_o = (coalesce_fire && hit_found_id == issue_id)
+                             ? coal_set_dirty_n
+                             : mshr_entries[issue_id].set_dirty;
 
     wire issue_fire = issue_valid_o && issue_ready_i;
 
@@ -242,7 +202,7 @@ module l2_tlb_mshr #(
     // -------------------------------------------------------------------------
     // Poison: a store the slot's clean walk cannot satisfy with a dirty PTE.
     wire poison_now = allocate_set_dirty_i
-                   && !mshr_entries[hit_found_id].set_dirty
+                   && (!mshr_entries[hit_found_id].set_dirty || mshr_entries[hit_found_id].dirty_poison)
                    && ((mshr_entries[hit_found_id].state == ES_CLEAN_PENDING_FILL)
                     || (mshr_entries[hit_found_id].state == ES_CLEAN_PENDING_DELIVER));
 
@@ -288,14 +248,13 @@ module l2_tlb_mshr #(
                 mshr_entries[alloc_id].vpn          <= allocate_vpn_i;
                 mshr_entries[alloc_id].asid         <= allocate_asid_i;
                 mshr_entries[alloc_id].set_dirty    <= allocate_set_dirty_i;
-                mshr_entries[alloc_id].prv          <= allocate_prv_i;
                 mshr_entries[alloc_id].dirty_poison <= 1'b0;
                 mshr_entries[alloc_id].dirty_cores  <= '0;
                 for (int j = 0; j < NUM_CORES; j++)
                 mshr_entries[alloc_id].pending_cores[j] <= (j == int'(allocate_core_id_i));
             end
 
-            // Reap: PTW accepted the issued walk
+            // Issue: PTW accepted the issued walk
             if (issue_fire) begin
                 if (mshr_entries[issue_id].state == ES_CLEAN_PENDING_ISSUE)
                     mshr_entries[issue_id].state <= ES_CLEAN_PENDING_FILL;

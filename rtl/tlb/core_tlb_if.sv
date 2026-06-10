@@ -18,15 +18,8 @@
  * under the License.
  */
 
-// Core <-> L1 TLB interface (unified ready/valid).
-//   req : core -> TLB
-//   rsp : TLB -> core (asserted only on a definitive result; a miss holds rsp low
-//         while the walk is in flight)
 interface core_tlb_if;
 
-    // A given master need not consume every field (e.g. the GPU adapter ignores
-    // req_ready, rsp_data.hit_idx and the high PPN bits), so UNUSEDSIGNAL on the
-    // interface nets is expected.
     /* verilator lint_off UNUSEDSIGNAL */
     logic                        req_valid, req_ready;
     mmu_pkg::core_tlb_req_data_t req_data;

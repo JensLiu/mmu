@@ -18,7 +18,6 @@
  * under the License.
  */
 
-// Permission check for a resident TLB entry against the request type.
 module pte_perm_check (
     input  mmu_pkg::tlb_entry_t tlb_entry_i,
     input  logic                sv_priv_lvl_i,
@@ -29,7 +28,7 @@ module pte_perm_check (
     output logic                exec_ok_o
 );
 
-    `UNUSED_VAR (tlb_entry_i)
+    `UNUSED_VAR(tlb_entry_i)
 
     logic core_sum, core_mxr;
     assign core_sum = 1;

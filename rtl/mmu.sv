@@ -36,7 +36,7 @@ module mmu #(
     input mmu_pkg::csr_ptw_comm_t csr_ptw_comm_i,
 
     // PTW - Memory Interface (ready/valid)
-    ptw_mem_if.ptw ptw_mem_if
+    ptw_mem_if.master ptw_mem_if
 );
 
     // Unified ready/valid PTW links, shared between the L2 frontend (tlb side)

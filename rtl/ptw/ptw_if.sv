@@ -1,5 +1,5 @@
 /*
- * Copyright 2025 BSC*
+ * Copyright 2026 BSC*
  * *Barcelona Supercomputing Center (BSC)
  *
  * SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
@@ -18,12 +18,6 @@
  * under the License.
  */
 
-// ---------------------------------------------------------
-// L2 TLB <-> PTW interface (unified ready/valid).
-//   req            : TLB -> PTW (issue a walk; carries a tag)
-//   rsp            : PTW -> TLB (walk result; echoes the tag)
-//   invalidate_tlb : broadcast flush PTW -> TLB (sideband, not request-matched)
-// ---------------------------------------------------------
 interface ptw_if;
 
     logic                   req_valid, req_ready;

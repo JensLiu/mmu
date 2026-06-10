@@ -1,23 +1,20 @@
 `include "VX_define.vh"
 
+// The adapter converts PTW memory requests to Vortex dcache format.
+// Supports both SV32 (XLEN=32, 4-byte PTEs) and SV39 (XLEN=64, 8-byte PTEs).
+// Assumptions:
+//  - PTW provides byte-aligned physical addresses
+//  - PTW request is held stable until response is received
+//  - Single outstanding request at a time
 module ptw_vxdcache_adapter #(
     parameter int unsigned NUM_PTWS = 1
 ) (
     input logic clk,
     input logic reset,
 
-    // PTW memory side (ready/valid)
-    ptw_mem_if.mem mem_if[NUM_PTWS],
-
+    ptw_mem_if.slave     mem_if    [NUM_PTWS],
     VX_mem_bus_if.master mem_bus_if[NUM_PTWS]
 );
-    // The adapter converts PTW memory requests to Vortex dcache format.
-    // Supports both SV32 (XLEN=32, 4-byte PTEs) and SV39 (XLEN=64, 8-byte PTEs).
-    //
-    // Assumptions:
-    //  - PTW provides byte-aligned physical addresses
-    //  - PTW request is held stable until response is received
-    //  - Single outstanding request at a time
 
     // We are adapting to the L2 cache interface
     localparam int unsigned WORD_SIZE = VX_gpu_pkg::DCACHE_LINE_SIZE;
@@ -70,8 +67,6 @@ module ptw_vxdcache_adapter #(
             mem_bus_if[0].req_data.tag.uuid  <= '0;
             mem_bus_if[0].req_data.tag.value <= '0;
         end else begin
-            // PTW deasserts req_valid when entering S_WAIT (between walk levels),
-            // which clears req_accepted so the next walk level can fire.
             if (!mem_if[0].req_valid) begin
                 req_accepted            <= 1'b0;
                 mem_bus_if[0].req_valid <= 1'b0;
@@ -92,7 +87,6 @@ module ptw_vxdcache_adapter #(
         end
     end
 
-    // Response: dcache -> PTW
     always_ff @(posedge clk) begin
         if (reset) begin
             mem_if[0].req_ready     <= 1'b0;

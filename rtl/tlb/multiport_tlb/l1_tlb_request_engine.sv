@@ -12,15 +12,6 @@
  * https://solderpad.org/licenses/SHL-2.1/
  */
 
-
-// L1 TLB request + deliver engine.
-//
-// Arbitrates one effective miss at a time onto a single fire-once L2 walk and,
-// on the response, fills the CAM (success) or delivers a page fault (error).
-//  - one walk outstanding; a miss aliased to the latched in-flight {vpn,asid}
-//    is not re-walked (coalescing) and shares its result/fault.
-//  - faults are held per-port until acknowledged (rsp_ready_i) and block the
-//    next walk until drained (a fault has no CAM backing to re-derive).
 module l1_tlb_request_engine
     import mmu_pkg::*;
 #(
@@ -140,7 +131,7 @@ module l1_tlb_request_engine
     always_comb begin
         l2_set_dirty = 1'b0;
         for (int p = 0; p < NUM_TLB_PORTS; p++) begin
-            if (eff_miss_i[p] && req_data_i[p].set_dirty_bit
+            if (eff_miss_i[p] && req_data_i[p].set_dirty
                 && (req_data_i[p].vpn  == req_data_i[port_idx].vpn)
                 && (req_data_i[p].asid == req_data_i[port_idx].asid)) begin
                 l2_set_dirty = 1'b1;
@@ -151,7 +142,7 @@ module l1_tlb_request_engine
     inter_tlb_req_data_t l2_req;
     always_comb begin
         l2_req               = req_data_i[port_idx];
-        l2_req.set_dirty_bit = l2_set_dirty;
+        l2_req.set_dirty = l2_set_dirty;
     end
     assign l2_if.req_data = l2_req;
 

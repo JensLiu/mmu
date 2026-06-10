@@ -18,7 +18,6 @@
  * under the License.
  */
 
-// Multiport parallel-CAM TLB storage with reference-matrix exact LRU.
 module tlb_storage_parallel_cam #(
     localparam int unsigned NUM_LEVELS       = mmu_pkg::LEVELS,
     localparam int unsigned LEVEL_BITS       = mmu_pkg::LEVEL_BITS,
@@ -32,20 +31,20 @@ module tlb_storage_parallel_cam #(
     input logic rst_i,
 
     // Read (combinational lookup)
-    input  logic                              read_valid_i [NUM_READ_PORTS],
-    output logic                              read_ready_o [NUM_READ_PORTS],
-    output logic                              read_is_hit_o[NUM_READ_PORTS],
-    input  logic                [ASID_WIDTH-1:0] read_asid_i [NUM_READ_PORTS],
-    input  logic                [ VPN_WIDTH-1:0] read_vpn_i  [NUM_READ_PORTS],
-    output logic                [LEVEL_BITS-1:0] read_level_o[NUM_READ_PORTS],
-    output mmu_pkg::tlb_entry_t               read_entry_o [NUM_READ_PORTS],
+    input  logic                                 read_valid_i [NUM_READ_PORTS],
+    output logic                                 read_ready_o [NUM_READ_PORTS],
+    output logic                                 read_is_hit_o[NUM_READ_PORTS],
+    input  logic                [ASID_WIDTH-1:0] read_asid_i  [NUM_READ_PORTS],
+    input  logic                [ VPN_WIDTH-1:0] read_vpn_i   [NUM_READ_PORTS],
+    output logic                [LEVEL_BITS-1:0] read_level_o [NUM_READ_PORTS],
+    output mmu_pkg::tlb_entry_t                  read_entry_o [NUM_READ_PORTS],
 
     // Write
-    input  logic                  write_valid_i,
-    output logic                  write_ready_o,
-    input  logic [ VPN_WIDTH-1:0] write_vpn_i,
-    input  logic [ASID_WIDTH-1:0] write_asid_i,
-    input  mmu_pkg::tlb_entry_t   write_entry_i,
+    input  logic                                 write_valid_i,
+    output logic                                 write_ready_o,
+    input  logic                [ VPN_WIDTH-1:0] write_vpn_i,
+    input  logic                [ASID_WIDTH-1:0] write_asid_i,
+    input  mmu_pkg::tlb_entry_t                  write_entry_i,
 
     // Clear (flush all valid entries)
     input  logic clear_valid_i,
@@ -59,7 +58,7 @@ module tlb_storage_parallel_cam #(
 
     // reference-matrix exact LRU: lru_matrix[i][j]=1 means i more-recent than j.
     // Access a => set row a, clear column a; victim = the all-zero row.
-    logic [NUM_TLB_ENTRIES-1:0] lru_matrix [NUM_TLB_ENTRIES];
+    logic                [NUM_TLB_ENTRIES-1:0] lru_matrix  [NUM_TLB_ENTRIES];
 
     for (genvar i = 0; i < NUM_READ_PORTS; i++) begin : g_read_valid
         assign read_ready_o[i] = !write_valid_i && !clear_valid_i;
@@ -67,7 +66,7 @@ module tlb_storage_parallel_cam #(
     // fill is fire-and-forget; a write coincident with clear is dropped (clear
     // wins), never deferred (a deferred refill would be stale).
     assign write_ready_o = 1'b1;
-    assign clear_ready_o = '1;
+    assign clear_ready_o = 1'b1;
 
     // ---------------------------------------------------------
     // Parallel CAM hit logic
@@ -75,14 +74,14 @@ module tlb_storage_parallel_cam #(
     // Compare over NUM_READ_PORTS + 1 query ports; the extra WR_PROBE port carries
     // the write VPN/ASID so the write path can find a resident copy to overwrite.
     localparam int unsigned NUM_QUERY = NUM_READ_PORTS + 1;
-    localparam int unsigned WR_PROBE  = NUM_READ_PORTS;
+    localparam int unsigned WR_PROBE = NUM_READ_PORTS;
 
-    logic [       VPN_WIDTH-1:0] q_vpn          [NUM_QUERY];
-    logic [      ASID_WIDTH-1:0] q_asid         [NUM_QUERY];
-    logic [NUM_TLB_ENTRIES-1:0]  q_entry_hit_lvl[NUM_QUERY][NUM_LEVELS];
-    logic [NUM_TLB_ENTRIES-1:0]  q_entry_hit    [NUM_QUERY];
-    logic                        q_hit          [NUM_QUERY];
-    logic [    TLB_IDX_BITS-1:0] q_hit_idx      [NUM_QUERY];
+    logic [      VPN_WIDTH-1:0] q_vpn          [NUM_QUERY];
+    logic [     ASID_WIDTH-1:0] q_asid         [NUM_QUERY];
+    logic [NUM_TLB_ENTRIES-1:0] q_entry_hit_lvl[NUM_QUERY] [NUM_LEVELS];
+    logic [NUM_TLB_ENTRIES-1:0] q_entry_hit    [NUM_QUERY];
+    logic                       q_hit          [NUM_QUERY];
+    logic [   TLB_IDX_BITS-1:0] q_hit_idx      [NUM_QUERY];
 
     for (genvar p = 0; p < NUM_READ_PORTS; p++) begin : g_read_query
         assign q_vpn[p]  = read_vpn_i[p];
@@ -101,7 +100,7 @@ module tlb_storage_parallel_cam #(
                         (tlb_entries[i].vpn[VPN_WIDTH-1 -: VPN_CMP_WIDTH] == q_vpn[p][VPN_WIDTH-1 -: VPN_CMP_WIDTH])
                         && (tlb_entries[i].asid == q_asid[p])
                         && tlb_entries[i].valid
-                        && (tlb_entries[i].level == 2'(lvl))
+                        && (tlb_entries[i].level == LEVEL_BITS'(lvl))
                     ) ? 1'b1 : 1'b0;
                 end
             end
@@ -161,12 +160,13 @@ module tlb_storage_parallel_cam #(
     always_comb begin
         write_match_vec = '0;
         for (int l = 0; l < NUM_LEVELS; l++) begin
-            if (write_entry_i.level == 2'(l)) write_match_vec = q_entry_hit_lvl[WR_PROBE][l];
+            if (write_entry_i.level == LEVEL_BITS'(l))
+                write_match_vec = q_entry_hit_lvl[WR_PROBE][l];
         end
     end
-    wire write_match = |write_match_vec;
+    wire                        write_match = |write_match_vec;
 
-    logic [TLB_IDX_BITS-1:0]    victim_idx;
+    logic [   TLB_IDX_BITS-1:0] victim_idx;
     logic [NUM_TLB_ENTRIES-1:0] victim_onehot;
     always_comb begin
         logic found;
@@ -205,15 +205,13 @@ module tlb_storage_parallel_cam #(
     // ---------------------------------------------------------
     // Per-cycle access set + accessing-port rank (ties break by port). Reads and
     // the fill are mutually exclusive, so it comes from one or the other.
-    logic                accessed [NUM_TLB_ENTRIES];
-    logic [RANK_BITS-1:0] acc_rank [NUM_TLB_ENTRIES];
+    logic                       accessed   [NUM_TLB_ENTRIES];
+    logic [      RANK_BITS-1:0] acc_rank   [NUM_TLB_ENTRIES];
 
     // only real read-port hits drive the LRU; WR_PROBE is a lookup, not an access
-    logic [NUM_TLB_ENTRIES-1:0] port_access [NUM_READ_PORTS];
+    logic [NUM_TLB_ENTRIES-1:0] port_access[ NUM_READ_PORTS];
     for (genvar p = 0; p < NUM_READ_PORTS; p++) begin : g_port_access
-        assign port_access[p] =
-            (read_valid_i[p] && read_ready_o[p]) ? q_entry_hit[p]
-                                                 : '0;
+        assign port_access[p] = (read_valid_i[p] && read_ready_o[p]) ? q_entry_hit[p] : '0;
     end
 
     always_comb begin
@@ -235,14 +233,15 @@ module tlb_storage_parallel_cam #(
         end
     end
 
-    logic [NUM_TLB_ENTRIES-1:0] lru_matrix_n [NUM_TLB_ENTRIES];
+    logic [NUM_TLB_ENTRIES-1:0] lru_matrix_n[NUM_TLB_ENTRIES];
     always_comb begin
         for (int i = 0; i < NUM_TLB_ENTRIES; i++) begin
             for (int j = 0; j < NUM_TLB_ENTRIES; j++) begin
                 if (i == j) lru_matrix_n[i][j] = 1'b0;  // diagonal
                 else if (accessed[i] && !accessed[j]) lru_matrix_n[i][j] = 1'b1;
                 else if (!accessed[i] && accessed[j]) lru_matrix_n[i][j] = 1'b0;
-                else if (accessed[i] && accessed[j]) lru_matrix_n[i][j] = (acc_rank[i] > acc_rank[j]);
+                else if (accessed[i] && accessed[j])
+                    lru_matrix_n[i][j] = (acc_rank[i] > acc_rank[j]);
                 else lru_matrix_n[i][j] = lru_matrix[i][j];
             end
         end

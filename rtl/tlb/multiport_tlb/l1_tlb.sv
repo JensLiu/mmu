@@ -18,16 +18,6 @@
  * under the License.
  */
 
-// Multiport L1 TLB.
-//   core req[P] -> parallel-CAM storage -> per-port datapath (perm check, PPN
-//   assembly, exceptions) -> core resp[P]. An effective miss[P] drives the
-//   request engine, which issues a single fire-once L2 walk and either fills
-//   the CAM (success) or raises a per-port page fault (error).
-//
-// A store to a clean page, or a hit on an entry with access==0, is not an
-// effective hit: it takes the miss path so the walk re-fetches the entry with
-// the A/D bits set, and storage overwrites the stale copy in place (de-dup by
-// VPN on write). Coalescing and fault delivery live in l1_tlb_request_engine.
 module l1_tlb #(
     parameter int unsigned NUM_TLB_PORTS = 1,
     parameter int unsigned TLB_ENTRIES   = 8
@@ -45,19 +35,19 @@ module l1_tlb #(
     // ---------------------------------------------------------
     // TLB storage
     // ---------------------------------------------------------
-    logic                          tlb_read_valid    [NUM_TLB_PORTS];
-    logic                          tlb_read_ready    [NUM_TLB_PORTS];
-    logic                          tlb_read_hit      [NUM_TLB_PORTS];
-    logic [mmu_pkg::ASID_WIDTH-1:0] tlb_read_asid    [NUM_TLB_PORTS];
-    logic [ mmu_pkg::VPN_WIDTH-1:0] tlb_read_vpn     [NUM_TLB_PORTS];
-    logic [mmu_pkg::LEVEL_BITS-1:0] tlb_read_level   [NUM_TLB_PORTS];
-    mmu_pkg::tlb_entry_t           tlb_read_hit_entry[NUM_TLB_PORTS];
+    logic                                          tlb_read_valid    [NUM_TLB_PORTS];
+    logic                                          tlb_read_ready    [NUM_TLB_PORTS];
+    logic                                          tlb_read_hit      [NUM_TLB_PORTS];
+    logic                [mmu_pkg::ASID_WIDTH-1:0] tlb_read_asid     [NUM_TLB_PORTS];
+    logic                [ mmu_pkg::VPN_WIDTH-1:0] tlb_read_vpn      [NUM_TLB_PORTS];
+    logic                [mmu_pkg::LEVEL_BITS-1:0] tlb_read_level    [NUM_TLB_PORTS];
+    mmu_pkg::tlb_entry_t                           tlb_read_hit_entry[NUM_TLB_PORTS];
 
-    logic                           tlb_write_valid;
-    logic [ mmu_pkg::VPN_WIDTH-1:0] tlb_write_vpn;
-    logic [mmu_pkg::ASID_WIDTH-1:0] tlb_write_asid;
-    mmu_pkg::tlb_entry_t            tlb_write_entry;
-    logic                           tlb_clear_valid;
+    logic                                          tlb_write_valid;
+    logic                [ mmu_pkg::VPN_WIDTH-1:0] tlb_write_vpn;
+    logic                [mmu_pkg::ASID_WIDTH-1:0] tlb_write_asid;
+    mmu_pkg::tlb_entry_t                           tlb_write_entry;
+    logic                                          tlb_clear_valid;
 
     tlb_storage_parallel_cam #(
         .NUM_READ_PORTS (NUM_TLB_PORTS),
@@ -84,34 +74,31 @@ module l1_tlb #(
     // ---------------------------------------------------------
     // Per-port hit / effective-miss + permission datapath
     // ---------------------------------------------------------
-    logic read_cam_hit[NUM_TLB_PORTS];
-    logic read_effective_hit[NUM_TLB_PORTS];
-    logic [NUM_TLB_PORTS-1:0] read_effective_miss;
-    logic [NUM_TLB_PORTS-1:0] write_dirty_bit;  // per-port store-ness (= req set_dirty_bit)
-    logic [NUM_TLB_PORTS-1:0] is_fetch;
-    logic xcpt_ld[NUM_TLB_PORTS];
-    logic xcpt_st[NUM_TLB_PORTS];
-    logic xcpt_if[NUM_TLB_PORTS];
+    logic [NUM_TLB_PORTS-1:0] read_cam_hit, read_effective_hit, read_effective_miss;
+    logic [NUM_TLB_PORTS-1:0] is_fetch, set_dirty;
+    logic                          xcpt_ld     [NUM_TLB_PORTS];
+    logic                          xcpt_st     [NUM_TLB_PORTS];
+    logic                          xcpt_if     [NUM_TLB_PORTS];
     logic [mmu_pkg::VPN_WIDTH-1:0] vpn_per_port[NUM_TLB_PORTS];
 
     for (genvar p = 0; p < NUM_TLB_PORTS; p++) begin : g_datapath
-        wire vm_enable = core_if[p].req_data.vm_enable;
-        wire req_valid = core_if[p].req_valid;
-        wire store     = core_if[p].req_data.store;
-        wire instr     = core_if[p].req_data.instruction;
+        wire                 vm_enable = core_if[p].req_data.vm_enable;
+        wire                 req_valid = core_if[p].req_valid;
+        wire                 store = core_if[p].req_data.store;
+        wire                 instr = core_if[p].req_data.instruction;
         mmu_pkg::tlb_entry_t entry = tlb_read_hit_entry[p];
 
         // A read only fires when storage is ready; during a fill it blocks
         // reads, so that cycle is neither a hit nor a miss (the request holds).
-        wire read_fire = tlb_read_valid[p] && tlb_read_ready[p];
+        wire                 read_fire = tlb_read_valid[p] && tlb_read_ready[p];
 
-        assign tlb_read_valid[p]  = req_valid && vm_enable;
-        assign tlb_read_vpn[p]    = core_if[p].req_data.vpn;
-        assign tlb_read_asid[p]   = core_if[p].req_data.asid;
-        assign vpn_per_port[p]    = core_if[p].req_data.vpn;
-        assign read_cam_hit[p]    = read_fire && tlb_read_hit[p];
-        assign write_dirty_bit[p] = store;
-        assign is_fetch[p]        = instr;
+        assign tlb_read_valid[p] = req_valid && vm_enable;
+        assign tlb_read_vpn[p]   = core_if[p].req_data.vpn;
+        assign tlb_read_asid[p]  = core_if[p].req_data.asid;
+        assign vpn_per_port[p]   = core_if[p].req_data.vpn;
+        assign read_cam_hit[p]   = read_fire && tlb_read_hit[p];
+        assign set_dirty[p]      = store_hit;
+        assign is_fetch[p]       = instr;
 
         logic store_hit, read_ok, write_ok, exec_ok;
         pte_perm_check pte_perm_check_it (
@@ -133,29 +120,29 @@ module l1_tlb #(
         // Permission faults are re-derivable from the resident entry, so they
         // ride the hit path (gated by the access type). PTW page faults (no
         // resident entry) are added from the engine below.
-        assign xcpt_if[p] = read_effective_hit[p] && instr && !exec_ok;
-        assign xcpt_st[p] = read_effective_hit[p] && store && !write_ok;
-        assign xcpt_ld[p] = read_effective_hit[p] && !store && !instr && !read_ok;
+        assign xcpt_if[p]             = read_effective_hit[p] && instr && !exec_ok;
+        assign xcpt_st[p]             = read_effective_hit[p] && store && !write_ok;
+        assign xcpt_ld[p]             = read_effective_hit[p] && !store && !instr && !read_ok;
     end
 
     // ---------------------------------------------------------
     // Request / deliver engine
     // ---------------------------------------------------------
-    mmu_pkg::inter_tlb_req_data_t            req_data    [NUM_TLB_PORTS];
-    logic                [NUM_TLB_PORTS-1:0] rsp_ready;
-    logic                [NUM_TLB_PORTS-1:0] fault_valid;
-    logic                                    fill_valid;
-    mmu_pkg::tlb_entry_t                     fill_entry;
-    logic [ mmu_pkg::VPN_WIDTH-1:0]          fill_vpn;
-    logic [mmu_pkg::ASID_WIDTH-1:0]          fill_asid;
-    logic                                    invalidate;
+    mmu_pkg::inter_tlb_req_data_t                           req_data    [NUM_TLB_PORTS];
+    logic                         [      NUM_TLB_PORTS-1:0] rsp_ready;
+    logic                         [      NUM_TLB_PORTS-1:0] fault_valid;
+    logic                                                   fill_valid;
+    mmu_pkg::tlb_entry_t                                    fill_entry;
+    logic                         [ mmu_pkg::VPN_WIDTH-1:0] fill_vpn;
+    logic                         [mmu_pkg::ASID_WIDTH-1:0] fill_asid;
+    logic                                                   invalidate;
 
     for (genvar p = 0; p < NUM_TLB_PORTS; p++) begin : g_req_data
-        assign req_data[p].vpn           = core_if[p].req_data.vpn[mmu_pkg::VPN_WIDTH-1:0];
-        assign req_data[p].asid          = core_if[p].req_data.asid;
-        assign req_data[p].prv           = core_if[p].req_data.priv_lvl;
-        assign req_data[p].set_dirty_bit = write_dirty_bit[p];  // Rule 1: OR'd in the engine
-        assign rsp_ready[p]              = core_if[p].rsp_ready;
+        assign req_data[p].vpn       = core_if[p].req_data.vpn[mmu_pkg::VPN_WIDTH-1:0];
+        assign req_data[p].asid      = core_if[p].req_data.asid;
+        assign req_data[p].prv       = core_if[p].req_data.priv_lvl;
+        assign req_data[p].set_dirty = set_dirty[p];  // Rule 1: OR'd in the engine
+        assign rsp_ready[p]          = core_if[p].rsp_ready;
     end
 
     l1_tlb_request_engine #(
@@ -191,10 +178,10 @@ module l1_tlb #(
     // For a leaf found at PTW level l, the lower (LEVELS-1-l)*PAGE_LVL_BITS bits
     // of the stored PPN are meaningless; those bits come from the VPN instead.
     logic [mmu_pkg::PPN_WIDTH-1:0] ppn_per_port_per_lvl   [NUM_TLB_PORTS] [mmu_pkg::LEVELS];
-    logic [    mmu_pkg::LEVELS-1:0] hit_per_port_per_lvl  [NUM_TLB_PORTS];
+    logic [   mmu_pkg::LEVELS-1:0] hit_per_port_per_lvl   [NUM_TLB_PORTS];
     logic [mmu_pkg::PPN_WIDTH-1:0] ppn_translated_per_port[NUM_TLB_PORTS];
     for (genvar p = 0; p < NUM_TLB_PORTS; ++p) begin : g_ppn_assignment
-        wire vm_enable = core_if[p].req_data.vm_enable;
+        wire                 vm_enable = core_if[p].req_data.vm_enable;
         mmu_pkg::tlb_entry_t entry = tlb_read_hit_entry[p];
         `UNUSED_VAR(entry)  // only entry.ppn is used in the PPN assembly
 
@@ -209,7 +196,8 @@ module l1_tlb #(
                 assign ppn_per_port_per_lvl[p][ppn_l] = entry.ppn;
             end else begin : g_super
                 assign ppn_per_port_per_lvl[p][ppn_l] = {
-                    entry.ppn[mmu_pkg::PPN_WIDTH-1 : SUPER_PAGE_BITS], vpn_per_port[p][SUPER_PAGE_BITS-1 : 0]
+                    entry.ppn[mmu_pkg::PPN_WIDTH-1 : SUPER_PAGE_BITS],
+                    vpn_per_port[p][SUPER_PAGE_BITS-1 : 0]
                 };
             end
         end
@@ -249,12 +237,8 @@ module l1_tlb #(
         // Exceptions: permission faults on the hit path, plus the PTW page
         // fault routed to this port by access type.
         assign core_if[p].rsp_data.xcpt.fetch = xcpt_if[p] || (fault_valid[p] && is_fetch[p]);
-        assign core_if[p].rsp_data.xcpt.store =
-            xcpt_st[p] || (fault_valid[p] && write_dirty_bit[p]);
-        assign core_if[p].rsp_data.xcpt.load =
-            xcpt_ld[p] || (fault_valid[p] && !write_dirty_bit[p] && !is_fetch[p]);
-
-        assign core_if[p].rsp_data.hit_idx = '0;
+        assign core_if[p].rsp_data.xcpt.store = xcpt_st[p] || (fault_valid[p] && set_dirty[p]);
+        assign core_if[p].rsp_data.xcpt.load = xcpt_ld[p] || (fault_valid[p] && !set_dirty[p] && !is_fetch[p]);
     end
 
 endmodule

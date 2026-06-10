@@ -12,21 +12,6 @@
  * https://solderpad.org/licenses/SHL-2.1/
  */
 
-`IGNORE_WARNINGS_BEGIN
-
-// Page Walk Cache (PWC).
-//
-// Caches non-leaf PTEs (page-table pointers) so a later walk can skip the
-// upper-level dmem reads.  Fully associative, keyed by the PTE's physical
-// address (tag); the data is the next-level page-table base PPN.
-//
-// Same read/write/clear handshake as the TLB storages:
-//  - Read : combinational lookup by tag.
-//  - Write: install a pointer.  De-dup invariant: a matching tag is overwritten
-//           in place, else an invalid slot is filled, else the PLRU victim.
-//  - Clear: flush all (TLB invalidate / SATP write).
-// Ready/valid exclusivity: clear > write > read.  The write is fire-and-forget
-// (always accepted); a write coincident with clear is dropped, not deferred.
 module ptw_cache
     import mmu_pkg::*;
 #(
@@ -129,5 +114,3 @@ module ptw_cache
     end
 
 endmodule
-
-`IGNORE_WARNINGS_END

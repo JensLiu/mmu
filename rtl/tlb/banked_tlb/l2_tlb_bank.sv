@@ -18,18 +18,6 @@
  * under the License.
  */
 
-// Non-blocking, MSHR-coalescing L2 TLB bank.
-//
-//  - Ingress: probe the store combinationally on the incoming request.
-//      * eff_hit (cam_hit && store_ok) -> load the response engine (1 src)
-//      * miss / store-to-clean         -> allocate (or coalesce) an MSHR slot
-//  - Issue : the MSHR presents a pending walk on the PTW request channel.
-//  - Fill  : a PTW response is captured directly into its slot (keyed by tag).
-//  - Deliver: the MSHR hands the response engine a {cores,result} snapshot; the
-//    engine drains one src/cycle and, on a terminal deliver, writes the cache.
-//
-// The store is the correctness backstop and is written exactly once per slot,
-// on its terminal deliver (so each VPN appears at most once in the store).
 module l2_tlb_bank #(
     parameter int unsigned SRC_W = 1,  // = LOG2UP(NUM_SRCS)
     parameter int unsigned NUM_SRCS = 2,  // requesters served by this bank
@@ -48,7 +36,9 @@ module l2_tlb_bank #(
     // Request (slave)
     input  logic                                     req_valid_i,
     output logic                                     req_ready_o,
+    /* verilator lint_off UNUSEDSIGNAL */
     input  mmu_pkg::inter_tlb_req_data_t             req_data_i,
+    /* verilator lint_on UNUSEDSIGNAL */
     input  logic                         [SRC_W-1:0] req_src_i,
 
     // Response (master)
@@ -72,7 +62,7 @@ module l2_tlb_bank #(
         entry_from_pte.vpn      = vpn;
         entry_from_pte.asid     = asid;
         entry_from_pte.ppn      = pte.ppn;
-        entry_from_pte.level    = 2'(level);
+        entry_from_pte.level    = LEVEL_BITS'(level);
         entry_from_pte.dirty    = pte.d;
         entry_from_pte.access   = pte.a;
         entry_from_pte.perms.ur = pte.r & pte.u & pte.v;
@@ -88,7 +78,7 @@ module l2_tlb_bank #(
     // -------------------------------------------------------------------------
     // Store
     // -------------------------------------------------------------------------
-    wire  write_dirty_bit = req_data_i.set_dirty_bit;  // computed in the L1 (pte_perm_check)
+    wire  set_dirty = req_data_i.set_dirty;  // computed in the L1 (pte_perm_check)
     logic tlb_read_valid;
     assign tlb_read_valid = req_valid_i;
     /* verilator lint_off UNUSEDSIGNAL */
@@ -127,7 +117,7 @@ module l2_tlb_bank #(
     wire read_cam_hit = tlb_read_fire && tlb_read_hit;
     // Dirty bit should NOT return until it's been written
     // TODO: check if L2  dirty bit is set
-    wire read_effective_hit = read_cam_hit && !write_dirty_bit;
+    wire read_effective_hit = read_cam_hit && !set_dirty;
 
     // -------------------------------------------------------------------------
     // Request acceptance
@@ -171,8 +161,7 @@ module l2_tlb_bank #(
         .allocate_ready_o     (allocate_ready),
         .allocate_vpn_i       (req_data_i.vpn),
         .allocate_asid_i      (req_data_i.asid),
-        .allocate_set_dirty_i (req_data_i.set_dirty_bit),
-        .allocate_prv_i       (req_data_i.prv),
+        .allocate_set_dirty_i (req_data_i.set_dirty),
         .allocate_core_id_i   (req_src_i),
         // PTW Issue (master)
         .issue_valid_o        (ptw_if.req_valid),
@@ -180,8 +169,7 @@ module l2_tlb_bank #(
         .issue_id_o           (ptw_if.req_data.tag.mshr_slot[MSHR_TAG_WIDTH-1:0]),
         .issue_vpn_o          (ptw_if.req_data.vpn),
         .issue_asid_o         (ptw_if.req_data.asid),
-        .issue_set_dirty_o    (ptw_if.req_data.store),
-        .issue_prv_o          (ptw_if.req_data.prv),
+        .issue_set_dirty_o    (ptw_if.req_data.set_dirty),
         // PTW Fill (slave)
         .fill_valid_i         (ptw_if.rsp_valid),
         .fill_ready_o         (ptw_if.rsp_ready),
