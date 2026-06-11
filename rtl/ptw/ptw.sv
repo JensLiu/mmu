@@ -247,7 +247,7 @@ module ptw #(
     assign ptw_if.rsp_data.level   = count_r;
     assign ptw_if.rsp_data.pte.ppn = rsp_ppn;
     assign ptw_if.rsp_data.pte.rfs = pte_r.rfs;
-    assign ptw_if.rsp_data.pte.d   = pte_r.d;
+    assign ptw_if.rsp_data.pte.d   = pte_r.d | do_dirty_write;
     assign ptw_if.rsp_data.pte.a   = pte_r.a;
     assign ptw_if.rsp_data.pte.g   = pte_r.g;
     assign ptw_if.rsp_data.pte.u   = pte_r.u;

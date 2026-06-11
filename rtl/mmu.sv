@@ -51,7 +51,7 @@ module mmu #(
 
     // L1 TLBs
     // Fully-associative, small size, multiport CAM could be feasible
-    for (genvar i = 0; i < NUM_CORES; ++i) begin : g_itlb
+    for (genvar i = 0; i < NUM_CORES; ++i) begin : g_l1_tlbs
         l1_tlb #(
             .NUM_TLB_PORTS(1),
             .TLB_ENTRIES  (L1_TLB_ENTRIES)

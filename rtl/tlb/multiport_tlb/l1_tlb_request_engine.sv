@@ -21,8 +21,9 @@ module l1_tlb_request_engine
     input logic clk_i,
     input logic rst_i,
 
-    // Per-port effective miss + request payload. req_data_i[p].set_dirty_bit
-    // carries this port's store-ness (used for the coalesced dirty walk).
+    // Per-port effective miss + request payload. req_data_i[p].set_dirty is set
+    // when this port is a store needing a dirty walk; OR-coalesced below so an
+    // aliased dirty store upgrades the shared walk.
     input logic                         [NUM_TLB_PORTS-1:0] eff_miss_i,
     input mmu_pkg::inter_tlb_req_data_t                     req_data_i[NUM_TLB_PORTS],
 

@@ -27,10 +27,10 @@ module ptw_vxdcache_adapter #(
     localparam int unsigned XLEN = `XLEN;
 
     // Word address sent to the dcache (byte offset stripped).
-    wire [ADDR_WIDTH-1:0] aligned_addr = ADDR_WIDTH'(mem_if[0].req_addr >> ADDR_OFFSET_BITS);
+    wire  [      ADDR_WIDTH-1:0] aligned_addr = ADDR_WIDTH'(mem_if[0].req_addr >> ADDR_OFFSET_BITS);
     // Byte offset of the PTE within the dcache word.
-    wire [ADDR_OFFSET_BITS-1:0] word_offset = mem_if[0].req_addr[ADDR_OFFSET_BITS-1:0];
-    wire req_is_write = (mem_if[0].req_cmd != mmu_pkg::PTW_MEM_READ);
+    wire  [ADDR_OFFSET_BITS-1:0] word_offset = mem_if[0].req_addr[ADDR_OFFSET_BITS-1:0];
+    wire                         req_is_write = (mem_if[0].req_cmd != mmu_pkg::PTW_MEM_READ);
 
     // Registered word_offset for response extraction (captured at launch)
     logic [ADDR_OFFSET_BITS-1:0] word_offset_r;
@@ -41,7 +41,7 @@ module ptw_vxdcache_adapter #(
     // exactly one bus request fires per PTW request. req_sent suppresses a
     // relaunch while the PTW is still holding req_valid (its ready/state path
     // lags the pulse by a cycle).
-    logic req_sent;
+    logic                        req_sent;
     always_ff @(posedge clk) begin
         if (reset) begin
             req_sent                <= 1'b0;
@@ -66,10 +66,8 @@ module ptw_vxdcache_adapter #(
                 mem_bus_if[0].req_data.byteen <= req_is_write
                     ? WORD_SIZE'(mem_if[0].req_wbe) << word_offset
                     : {WORD_SIZE{1'b1}};
-                mem_bus_if[0].req_data.data <=
-                    LINE_BITS'(mem_if[0].req_wdata) << (word_offset * 8);
+                mem_bus_if[0].req_data.data <= LINE_BITS'(mem_if[0].req_wdata) << (word_offset * 8);
                 mem_bus_if[0].req_data.flags <= '0;  // < global memory access
-                // Tag is all zeros: UUID=0 (debug), ClientID injected downstream.
                 mem_bus_if[0].req_data.tag.uuid <= '0;
                 mem_bus_if[0].req_data.tag.value <= '0;
                 word_offset_r <= word_offset;
@@ -86,12 +84,12 @@ module ptw_vxdcache_adapter #(
             mem_if[0].rsp_error     <= 1'b0;
             mem_bus_if[0].rsp_ready <= 1'b0;
         end else begin
-            mem_if[0].rsp_valid <= mem_bus_if[0].rsp_valid;
-            mem_if[0].rsp_error <= 1'b0;  // no PTE-access fault reported by the dcache
+            mem_if[0].rsp_valid     <= mem_bus_if[0].rsp_valid;
+            mem_if[0].rsp_error     <= 1'b0;  // no PTE-access fault reported by the dcache
             // Extract one PTE (XLEN bits) at the byte offset within the cache word,
             // then zero-extend to 64b (SV32: 32b->64b; SV39: 64b->64b). Uses the
             // registered offset so it matches the original request.
-            mem_if[0].rsp_data <= 64'(mem_bus_if[0].rsp_data.data[word_offset_r*8+:XLEN]);
+            mem_if[0].rsp_data      <= 64'(mem_bus_if[0].rsp_data.data[word_offset_r*8+:XLEN]);
             mem_bus_if[0].rsp_ready <= 1'b1;  // < the MMU always accepts the response
         end
     end
