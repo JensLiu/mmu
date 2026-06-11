@@ -18,19 +18,23 @@
  * under the License.
  */
 
-interface ptw_mem_if;
-
-    localparam int unsigned VADDR_WIDTH = mmu_pkg::VADDR_WIDTH;
+// PTW <-> memory. Reads get a response on the rsp_* channel; writes are
+// posted: acceptance (req_ready) is the only completion, no response follows.
+interface ptw_mem_if #(
+    parameter  int unsigned XLEN        = mmu_pkg::XLEN,
+    localparam int unsigned PADDR_WIDTH = mmu_pkg::PADDR_WIDTH,
+    localparam int unsigned BEN_WIDTH   = XLEN / 8
+);
 
     /* verilator lint_off UNUSEDSIGNAL */
     logic req_valid, req_ready;
-    logic                  [VADDR_WIDTH:0] req_addr;
-    mmu_pkg::ptw_mem_cmd_t                 req_cmd;
-    logic                  [         63:0] req_wdata;  // PTE write-back value / AMO-OR mask
-    logic                  [         63:0] req_wbe;  // Byte-enable format
+    logic                  [PADDR_WIDTH-1:0] req_addr;
+    mmu_pkg::ptw_mem_cmd_t                   req_cmd;
+    logic                  [       XLEN-1:0] req_wdata;  // PTE write-back value / AMO-OR mask
+    logic                  [  BEN_WIDTH-1:0] req_wbe;  // byte enables, PTE-relative
     logic rsp_valid, rsp_ready;
     logic [63:0] rsp_data;
-    logic        rsp_error;  // access/bus fault on the PTE access
+    logic        rsp_error;  // access/bus fault on the PTE access (reads only)
 
     /* verilator lint_on UNUSEDSIGNAL */
 

@@ -19,13 +19,14 @@
  */
 
 module ptw #(
-    parameter  int unsigned XLEN            = 64,
-    localparam int unsigned LEVELS          = mmu_pkg::LEVELS,
-    localparam int unsigned PPN_WIDTH       = mmu_pkg::PPN_WIDTH,
-    localparam int unsigned VPN_WIDTH       = mmu_pkg::VPN_WIDTH,
-    localparam int unsigned VADDR_WIDTH     = mmu_pkg::VADDR_WIDTH,
-    localparam int unsigned PAGE_LVL_BITS   = mmu_pkg::PAGE_LVL_BITS,
-    localparam int unsigned LEVEL_CNT_WIDTH = $clog2(LEVELS)
+    parameter  int unsigned XLEN              = mmu_pkg::XLEN,
+    localparam int unsigned LEVELS            = mmu_pkg::LEVELS,
+    localparam int unsigned PPN_WIDTH         = mmu_pkg::PPN_WIDTH,
+    localparam int unsigned VPN_WIDTH         = mmu_pkg::VPN_WIDTH,
+    localparam int unsigned PADDR_WIDTH       = mmu_pkg::PADDR_WIDTH,
+    localparam int unsigned PAGE_LVL_BITS     = mmu_pkg::PAGE_LVL_BITS,
+    localparam int unsigned LEVEL_CNT_WIDTH   = $clog2(LEVELS),
+    localparam int unsigned ADDR_OFFSET_WIDTH = $clog2(XLEN / 8)
 ) (
     input logic clk_i,
     input logic rst_i,
@@ -51,7 +52,6 @@ module ptw #(
         S_REQ,
         S_WAIT,
         S_WRITE_REQ,
-        S_WRITE_WAIT,
         S_DONE,
         S_ERROR
     } ptw_state_t;
@@ -130,26 +130,33 @@ module ptw #(
     wire is_pte_sw = is_pte_sr && mem_pte.w;
     wire is_pte_sx = mem_pte.v && mem_pte.x && !mem_pte.u;
 
+    // A non-writable leaf skips the write
+    // TLB permission check should raise the store fault from the returned perms
+    wire do_dirty_write = req_r.set_dirty && is_pte_leaf && mem_pte.w && !mem_pte.d;
+
     // -------------------------------------------------------------------------
     // PTE address for the current level: (walk_ppn << 12) + (vpn_lvl << log2(PTE))
+    // PADDR_WIDTH clamps the PA to the platform width (SV39: full 56-bit PA;
+    // SV32: 32 bits, dropping ppn[21:20] -- see mmu_pkg).
     // -------------------------------------------------------------------------
-    logic [VADDR_WIDTH:0] pte_addr;
-    logic [63:0] pte_addr_full;
-    assign pte_addr_full = {
-        {(64 - (PPN_WIDTH + PAGE_LVL_BITS + $clog2(XLEN / 8))) {1'b0}},
-        {pte_r.ppn, vpn_lvl, {{($clog2(XLEN / 8))} {1'b0}}}
-    };
-    assign pte_addr = pte_addr_full[VADDR_WIDTH:0];
+    logic [PADDR_WIDTH-1:0] pte_addr;
+    logic [PADDR_WIDTH-1:0] pte_addr_r;  // address of the last fetched PTE
+    assign pte_addr =
+        PADDR_WIDTH'((XLEN'(pte_r.ppn) << 12) | (XLEN'(vpn_lvl) << ADDR_OFFSET_WIDTH));
 
     // -------------------------------------------------------------------------
     // Walk registers: latch the request, advance the walk pointer
     // -------------------------------------------------------------------------
     always_ff @(posedge clk_i) begin
         if (rst_i) begin
-            req_r <= '0;
-            pte_r <= '0;
+            req_r      <= '0;
+            pte_r      <= '0;
+            pte_addr_r <= '0;
         end else if ((current_state == S_WAIT) && mem_rsp_valid) begin
-            pte_r <= mem_pte;  // latch the fetched PTE
+            pte_r      <= mem_pte;  // latch the fetched PTE
+            pte_r.d    <= mem_pte.d | do_dirty_write;  // response/write-back see the
+            pte_r.a    <= mem_pte.a | do_dirty_write;  // updated PTE, not the read one
+            pte_addr_r <= pte_addr;  // the PTE's own address, for the dirty write-back
         end else if ((current_state == S_REQ) && pwc_hit && not_last_level) begin
             pte_r.ppn <= pwc_data;  // PWC supplied the next pointer
         end else if (ptw_ready && ptw_if.req_valid) begin
@@ -164,8 +171,9 @@ module ptw #(
 `ifndef NO_PTW_CACHE
     // A read hit in S_REQ lets the FSM skip the dmem read. Only real dmem
     // responses for table PTEs are installed (a hit skips the read, so no write
-    // happens for that level); the cache de-dups on write.
-    wire pwc_write = mem_rsp_valid && is_pte_table;
+    // happens for that level); the cache de-dups on write. Gated on S_WAIT so a
+    // stray response outside the read phase can never pollute the cache.
+    wire pwc_write = (current_state == S_WAIT) && mem_rsp_valid && is_pte_table;
     logic pwc_read_ready, pwc_read_hit;
     ptw_cache ptw_cache_inst (
         .clk_i        (clk_i),
@@ -189,61 +197,55 @@ module ptw #(
     assign pwc_hit  = 1'b0;
     assign pwc_data = '0;
 `endif
-    wire           pwc_skip = pwc_hit && not_last_level;  // skip the dmem read this level
+    wire pwc_skip = pwc_hit && not_last_level;  // skip the dmem read this level
 
     // -------------------------------------------------------------------------
     // Memory request
     // -------------------------------------------------------------------------
-    mmu_pkg::pte_t pte_write;
     always_comb begin
         mem_if.req_addr  = pte_addr;
         mem_if.req_wbe   = '0;
         mem_if.rsp_ready = 1'b1;  // single outstanding; always accept the response
         mem_if.req_cmd   = mmu_pkg::PTW_MEM_READ;
         mem_if.req_wdata = '0;
-        pte_write        = '0;
         if (current_state == S_WRITE_REQ) begin
-            pte_write   = pte_r;
-            pte_write.d = 1'b1;
-`ifdef MEM_AMO_OR
-            mem_if.req_cmd    = mmu_pkg::PTW_MEM_AMO_OR;
-            mem_if.req_wdata  = pte_write;
-            mem_if.req_wbe    = 0;
-            mem_if.req_wbe[4] = '{1'b1};
-`else
+            // Posted write-back of the updated PTE (D/A already set in pte_r),
+            // at the PTE's own address (pte_r.ppn now holds the leaf, so the
+            // live pte_addr would point into the target page instead).
+            // TODO: support AMO_OR operation
             mem_if.req_cmd   = mmu_pkg::PTW_MEM_WRITE;
-            mem_if.req_wdata = {{64 - XLEN{1'b0}}, pte_write};
-            mem_if.req_wbe   = '{64{1'b1}};
-`endif
+            mem_if.req_addr  = pte_addr_r;
+            mem_if.req_wdata = XLEN'(pte_r);
+            mem_if.req_wbe   = '1;  // whole PTE; the adapter shifts it into line position
         end
     end
 
     // -------------------------------------------------------------------------
     // TLB response
     // -------------------------------------------------------------------------
-    wire resp_error = (current_state == S_ERROR);
-    wire resp_valid = (current_state == S_DONE) || resp_error;
+    wire                                rsp_error = (current_state == S_ERROR);
+    wire                                rsp_valid = (current_state == S_DONE) || rsp_error;
 
-    // Leaf PPN base = pte_addr >> 12 (equals the leaf PTE's PPN, since the
-    // vpn_lvl<<log2(PTE) term lives entirely in the low 12 bits).
-    wire [63:0] leaf_ppn_base = {{(64 - (VADDR_WIDTH - 11)) {1'b0}}, pte_addr[VADDR_WIDTH:12]};
-    wire [PPN_WIDTH-1:0] resp_ppn_per_lvl[LEVELS-1:0];
-    for (genvar j = 0; j < LEVELS; j++) begin : g_resp_ppn_per_lvl
+    // In S_DONE pte_r holds the leaf PTE, so its PPN is the translation base
+    // (full width, not clamped to the platform PA like pte_addr).
+    wire [PPN_WIDTH-1:0]                leaf_ppn_base = pte_r.ppn;
+    wire [   LEVELS-1:0][PPN_WIDTH-1:0] rsp_ppn_per_lvl;
+    for (genvar j = 0; j < LEVELS; j++) begin : g_rsp_ppn_per_lvl
         localparam int unsigned SUPER_BITS = (LEVELS - j - 1) * PAGE_LVL_BITS;
         if (SUPER_BITS == 0) begin : g_leaf
-            assign resp_ppn_per_lvl[j] = leaf_ppn_base[PPN_WIDTH-1:0];
+            assign rsp_ppn_per_lvl[j] = leaf_ppn_base[PPN_WIDTH-1:0];
         end else begin : g_super
-            assign resp_ppn_per_lvl[j] = {
+            assign rsp_ppn_per_lvl[j] = {
                 leaf_ppn_base[PPN_WIDTH-1 : SUPER_BITS], req_r.vpn[SUPER_BITS-1 : 0]
             };
         end
     end
-    wire [PPN_WIDTH-1:0] resp_ppn = resp_ppn_per_lvl[count_r];
+    wire [PPN_WIDTH-1:0] rsp_ppn = rsp_ppn_per_lvl[count_r];
 
-    assign ptw_if.rsp_valid        = resp_valid;
-    assign ptw_if.rsp_data.error   = resp_error;
+    assign ptw_if.rsp_valid        = rsp_valid;
+    assign ptw_if.rsp_data.error   = rsp_error;
     assign ptw_if.rsp_data.level   = count_r;
-    assign ptw_if.rsp_data.pte.ppn = resp_ppn;
+    assign ptw_if.rsp_data.pte.ppn = rsp_ppn;
     assign ptw_if.rsp_data.pte.rfs = pte_r.rfs;
     assign ptw_if.rsp_data.pte.d   = pte_r.d;
     assign ptw_if.rsp_data.pte.a   = pte_r.a;
@@ -298,20 +300,14 @@ module ptw #(
                         count_n    = count_r + LEVEL_CNT_WIDTH'(1);  // descend
                         next_state = S_REQ;
                     end else if (is_pte_leaf) begin
-                        if (ptw_if.req_data.set_dirty) begin
-                            next_state = S_WRITE_REQ;
-                        end else begin
-                            next_state = S_DONE;
-                        end
+                        next_state = do_dirty_write ? S_WRITE_REQ : S_DONE;
                     end else next_state = S_ERROR;
                 end
             end
             S_WRITE_REQ: begin
+                // no write response needed for store
                 mem_if.req_valid = 1'b1;
-                if (mem_req_ready) next_state = S_WRITE_WAIT;
-            end
-            S_WRITE_WAIT: begin
-                if (mem_rsp_valid) next_state = S_DONE;
+                if (mem_req_ready) next_state = S_DONE;
             end
             S_DONE:  next_state = ptw_if.rsp_ready ? S_READY : S_DONE;  // hold until accepted
             S_ERROR: next_state = ptw_if.rsp_ready ? S_READY : S_ERROR;
@@ -319,5 +315,3 @@ module ptw #(
         endcase
     end
 endmodule
-
-`IGNORE_WARNINGS_END

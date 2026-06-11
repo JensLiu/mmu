@@ -75,7 +75,7 @@ module l1_tlb #(
     // Per-port hit / effective-miss + permission datapath
     // ---------------------------------------------------------
     logic [NUM_TLB_PORTS-1:0] read_cam_hit, read_effective_hit, read_effective_miss;
-    logic [NUM_TLB_PORTS-1:0] is_fetch, set_dirty;
+    logic [NUM_TLB_PORTS-1:0] is_fetch, is_store, set_dirty;
     logic                          xcpt_ld     [NUM_TLB_PORTS];
     logic                          xcpt_st     [NUM_TLB_PORTS];
     logic                          xcpt_if     [NUM_TLB_PORTS];
@@ -97,7 +97,8 @@ module l1_tlb #(
         assign tlb_read_asid[p]  = core_if[p].req_data.asid;
         assign vpn_per_port[p]   = core_if[p].req_data.vpn;
         assign read_cam_hit[p]   = read_fire && tlb_read_hit[p];
-        assign set_dirty[p]      = store_hit;
+        assign set_dirty[p]      = store && !store_hit;
+        assign is_store[p]       = store;
         assign is_fetch[p]       = instr;
 
         logic store_hit, read_ok, write_ok, exec_ok;
@@ -235,10 +236,10 @@ module l1_tlb #(
         assign core_if[p].rsp_data.ppn = ppn_translated_per_port[p];
 
         // Exceptions: permission faults on the hit path, plus the PTW page
-        // fault routed to this port by access type.
+        // fault routed to this port by its actual access type (fetch/store/load).
         assign core_if[p].rsp_data.xcpt.fetch = xcpt_if[p] || (fault_valid[p] && is_fetch[p]);
-        assign core_if[p].rsp_data.xcpt.store = xcpt_st[p] || (fault_valid[p] && set_dirty[p]);
-        assign core_if[p].rsp_data.xcpt.load = xcpt_ld[p] || (fault_valid[p] && !set_dirty[p] && !is_fetch[p]);
+        assign core_if[p].rsp_data.xcpt.store = xcpt_st[p] || (fault_valid[p] && is_store[p]);
+        assign core_if[p].rsp_data.xcpt.load = xcpt_ld[p] || (fault_valid[p] && !is_store[p] && !is_fetch[p]);
     end
 
 endmodule

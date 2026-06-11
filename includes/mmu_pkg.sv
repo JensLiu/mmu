@@ -28,23 +28,31 @@ package mmu_pkg;
 
 `ifdef XLEN_64
     // SV39 (64-bit)
-    parameter VPN_WIDTH     = 27;  // total VPN bits (3 levels x 9 bits)
-    parameter PPN_WIDTH     = 44;  // physical page number bits
-    parameter VADDR_WIDTH   = 39;  // virtual address bits
-    parameter ASID_WIDTH    = 16;  // address space ID bits
-    parameter LEVELS        = 3;   // page table levels
-    parameter PAGE_LVL_BITS = 9;   // VPN bits per level
-    parameter PTE_SIZE      = 8;   // PTE size in bytes
+    parameter VPN_WIDTH = 27;  // total VPN bits (3 levels x 9 bits)
+    parameter PPN_WIDTH = 44;  // physical page number bits
+    parameter VADDR_WIDTH = 39;  // virtual address bits
+    parameter ASID_WIDTH = 16;  // address space ID bits
+    parameter LEVELS = 3;  // page table levels
+    parameter PAGE_LVL_BITS = 9;  // VPN bits per level
+    parameter PTE_SIZE = 8;  // PTE size in bytes
+    parameter XLEN = 64;
 `else
     // SV32 (32-bit)
-    parameter VPN_WIDTH     = 20;  // total VPN bits (2 levels x 10 bits)
-    parameter PPN_WIDTH     = 22;  // physical page number bits (34-bit PA - 12-bit offset)
-    parameter VADDR_WIDTH   = 32;  // virtual address bits
-    parameter ASID_WIDTH    = 9;   // address space ID bits
-    parameter LEVELS        = 2;   // page table levels
+    parameter VPN_WIDTH = 20;  // total VPN bits (2 levels x 10 bits)
+    parameter PPN_WIDTH = 22;  // physical page number bits (34-bit PA - 12-bit offset)
+    parameter VADDR_WIDTH = 32;  // virtual address bits
+    parameter ASID_WIDTH = 9;  // address space ID bits
+    parameter LEVELS = 2;  // page table levels
     parameter PAGE_LVL_BITS = 10;  // VPN bits per level
-    parameter PTE_SIZE      = 4;   // PTE size in bytes
+    parameter PTE_SIZE = 4;  // PTE size in bytes
+    parameter XLEN = 32;
 `endif
+
+    // Physical address width for PTE accesses: the full SVxx PA is
+    // PPN_WIDTH+12 bits, clamped to XLEN for this platform. SV39's 56-bit PA
+    // fits XLEN=64 untouched; SV32's 34-bit PA is clamped to 32 bits
+    // (ppn[21:20] unused). Remove the clamp to support the full SV32 PA.
+    parameter PADDR_WIDTH = ((PPN_WIDTH + 12) < XLEN) ? (PPN_WIDTH + 12) : XLEN;
 
     parameter PTW_CACHE_SIZE = $clog2(LEVELS * 2);
 
@@ -123,9 +131,9 @@ package mmu_pkg;
         logic [VPN_WIDTH-1:0]   vpn;
         logic [ASID_WIDTH-1:0]  asid;
         logic [PPN_WIDTH-1:0]   ppn;
-        logic [1:0]             level;
+        logic [LEVEL_BITS-1:0]  level;
         logic                   dirty;
-        logic                   access;
+        logic access;
         tlb_entry_permissions_t perms;
         logic                   valid;
     } tlb_entry_t;
@@ -156,7 +164,7 @@ package mmu_pkg;
     } tlb_ex_t;  // exception origin
 
     typedef struct packed {
-        logic                 valid;  // a definitive answer is available (hit or fault)
+        logic                 valid;    // a definitive answer is available (hit or fault)
         logic                 miss;
         logic [PPN_WIDTH-1:0] ppn;
         tlb_ex_t              xcpt;
@@ -173,13 +181,12 @@ package mmu_pkg;
         logic                  instruction;
         logic                  store;
         logic [1:0]            priv_lvl;
-        logic                  vm_enable;  // per-request; clear it to bypass translation
+        logic                  vm_enable;    // per-request; clear it to bypass translation
     } core_tlb_req_data_t;
 
     typedef struct packed {
         logic [PPN_WIDTH-1:0] ppn;
         tlb_ex_t              xcpt;
-        logic [7:0]           hit_idx;
     } core_tlb_rsp_data_t;
 
     // ---------------------------------------------------------
@@ -189,7 +196,7 @@ package mmu_pkg;
         logic [VPN_WIDTH-1:0]  vpn;
         logic [ASID_WIDTH-1:0] asid;
         logic [1:0]            prv;
-        logic                  set_dirty_bit;
+        logic                  set_dirty;
     } inter_tlb_req_data_t;
 
     typedef struct packed {
@@ -205,8 +212,8 @@ package mmu_pkg;
     //   .bank      - the bank id, stamped by the PTW scheduler (routes the response)
     // Each layer touches only its own field, so neither hard-codes bit positions.
     // Widths are design maxima (>= any bank's MSHR_TAG_W / clog2(NUM_BANKS)).
-    parameter PTW_TAG_SLOT_WIDTH    = 4;  // up to 16 MSHR slots per bank
-    parameter PTW_TAG_BANK_WIDTH    = 4;  // up to 16 banks
+    parameter PTW_TAG_SLOT_WIDTH = 4;  // up to 16 MSHR slots per bank
+    parameter PTW_TAG_BANK_WIDTH = 4;  // up to 16 banks
     parameter PTW_TAG_TLB_SET_WIDTH = 8;  // up to 256 TLB sets
     parameter PTW_TAG_WIDTH = PTW_TAG_BANK_WIDTH + PTW_TAG_SLOT_WIDTH + PTW_TAG_TLB_SET_WIDTH;
 
@@ -219,9 +226,7 @@ package mmu_pkg;
     typedef struct packed {
         logic [VPN_WIDTH-1:0]  vpn;
         logic [ASID_WIDTH-1:0] asid;
-        logic [1:0]            prv;
-        logic                  store;
-        logic                  fetch;
+        logic                  set_dirty;
         ptw_tag_t              tag;
     } ptw_req_data_t;
 
@@ -236,9 +241,9 @@ package mmu_pkg;
     // PTW internal
     // ---------------------------------------------------------
     typedef struct packed {
-        logic                 valid;
-        logic [VADDR_WIDTH:0] tags;
-        logic [PPN_WIDTH-1:0] data;
+        logic                   valid;
+        logic [PADDR_WIDTH-1:0] tags;  // PTE physical address
+        logic [PPN_WIDTH-1:0]   data;
     } ptw_ptecache_entry_t;
 
     // ---------------------------------------------------------
@@ -251,7 +256,7 @@ package mmu_pkg;
         PTW_MEM_READ   = 2'd0,
         PTW_MEM_WRITE  = 2'd1,
         PTW_MEM_AMO_OR = 2'd2
-    } ptw_mem_cmd_e;
+    } ptw_mem_cmd_t;
 
     // ---------------------------------------------------------
     // CSR interface
