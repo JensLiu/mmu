@@ -28,30 +28,20 @@ module mmu #(
     input logic clk_i,
     input logic rst_i,
 
-    // iTLB / dTLB request-response (per-port handshake interfaces)
     core_tlb_if.slave itlb_core_if[                     NUM_CORES],
     core_tlb_if.slave dtlb_core_if[NUM_CORES * NUM_DTLBS_PER_CORE],
+    ptw_mem_if.master ptw_mem_if,
 
-    // CSR interface
-    input mmu_pkg::csr_ptw_comm_t csr_ptw_comm_i,
-
-    // PTW - Memory Interface (ready/valid)
-    ptw_mem_if.master ptw_mem_if
+    input mmu_pkg::csr_ptw_comm_t csr_ptw_comm_i
 );
 
-    // Unified ready/valid PTW links, shared between the L2 frontend (tlb side)
-    // and the PTW pool (ptw side).  NUM_PTWS>1 also needs a dmem arbiter, so it
-    // stays 1 until that is built.
     localparam int unsigned NUM_PTWS = 1;
-    ptw_if ptw_link[NUM_PTWS] ();
 
-    // L1 <-> L2 fire-once links (interleaved: [i*2] = iTLB, [i*2+1] = dTLB).
-    // Each L1 TLB drives its inter_tlb_if master directly.
+    ptw_if ptw_link[NUM_PTWS] ();
     inter_tlb_if l1_l2_links[2 * NUM_CORES] ();
 
-    // L1 TLBs
-    // Fully-associative, small size, multiport CAM could be feasible
     for (genvar i = 0; i < NUM_CORES; ++i) begin : g_l1_tlbs
+        // L1 TLBs: Fully-associative, small size, multiport CAM could be feasible
         l1_tlb #(
             .NUM_TLB_PORTS(1),
             .TLB_ENTRIES  (L1_TLB_ENTRIES)
@@ -76,9 +66,6 @@ module mmu #(
         );
     end
 
-    // Decoupled shared L2 TLB: request scatter -> single bank (PTE cache) ->
-    // response gather. NUM_BANKS = 1 today; bump it to bank by VPN.
-    // The bank's CAM is single-ported - no NUM_CORES-wide parallel lookup.
     l2_tlb_frontend #(
         .NUM_REQS (2 * NUM_CORES),
         .NUM_BANKS(4),
@@ -98,9 +85,7 @@ module mmu #(
         .clk_i         (clk_i),
         .rst_i         (rst_i),
         .ptw_if        (ptw_link[0]),
-        // memory interface
         .mem_if        (ptw_mem_if),
-        // csr interface
         .csr_ptw_comm_i(csr_ptw_comm_i)
     );
 
