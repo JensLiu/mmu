@@ -186,8 +186,7 @@ module l2_tlb_bank #(
         .deliver_error_o      (deliver_error),
         .deliver_vpn_o        (deliver_vpn),
         .deliver_asid_o       (deliver_asid),
-        .deliver_write_cache_o(deliver_write_cache),
-        `UNUSED_PIN(pending_entries_o)
+        .deliver_write_cache_o(deliver_write_cache)
     );
 
     assign ptw_if.req_data.tag.bank = '0;  // Filled later by the scheduler
@@ -197,18 +196,14 @@ module l2_tlb_bank #(
     end
 
     // -------------------------------------------------------------------------
-    // Response engine: serializes a coalesced deliver (or a single hit) onto the
-    // response port, one src/cycle.  Payload-opaque - it receives finished rsp
-    // structs (PTE expansion + the cache write stay here in the bank).
+    // Response engine
     // -------------------------------------------------------------------------
     // Entry for current TLB update
     mmu_pkg::tlb_entry_t deliver_entry;
     assign deliver_entry = entry_from_pte(
         deliver_vpn, deliver_asid, deliver_pte, deliver_level, deliver_level
     );
-    // Response for upstream TLB update
-    mmu_pkg::inter_tlb_rsp_data_t
-        deliver_rsp  /*MSHR Deliver Response*/, hit_rsp  /* TLB Hit Response */;
+    mmu_pkg::inter_tlb_rsp_data_t deliver_rsp, hit_rsp;
     always_comb begin
         deliver_rsp.tlb_entry = deliver_entry;
         deliver_rsp.error     = deliver_error;
@@ -216,7 +211,7 @@ module l2_tlb_bank #(
         hit_rsp.error         = 1'b0;
     end
 
-    logic deliver_engine_hit_ready;  // Hit/Deliver Arbitration (request ready back pressure)
+    logic deliver_engine_hit_ready;
     l2_tlb_bank_response_engine #(
         .NUM_CORES(NUM_SRCS)
     ) resp_engine (

@@ -8,7 +8,7 @@
 //  - Single outstanding request at a time
 //  - Writes are posted: the dcache sends no write response, so the req_ready
 //    pulse is the only completion the PTW gets (see ptw_mem_if).
-module ptw_vxdcache_adapter #(
+module ptw_vxdcache_adapter_v2 #(
     parameter int unsigned NUM_PTWS = 1
 ) (
     input logic clk,
@@ -27,10 +27,10 @@ module ptw_vxdcache_adapter #(
     localparam int unsigned XLEN = `XLEN;
 
     // Word address sent to the dcache (byte offset stripped).
-    wire [ADDR_WIDTH-1:0] aligned_addr = ADDR_WIDTH'(mem_if[0].req_addr >> ADDR_OFFSET_BITS);
+    wire [      ADDR_WIDTH-1:0] aligned_addr = ADDR_WIDTH'(mem_if[0].req_addr >> ADDR_OFFSET_BITS);
     // Byte offset of the PTE within the dcache word.
     wire [ADDR_OFFSET_BITS-1:0] word_offset = mem_if[0].req_addr[ADDR_OFFSET_BITS-1:0];
-    wire req_is_write = (mem_if[0].req_cmd != mmu_pkg::PTW_MEM_READ);
+    wire                        req_is_write = (mem_if[0].req_cmd != mmu_pkg::PTW_MEM_READ);
 
     // -------------------------------------------------------------------------
     // Request channel: combinational pass-through. The PTW holds req_* stable
@@ -39,25 +39,25 @@ module ptw_vxdcache_adapter #(
     // creates no combinational loop and needs no holding register.
     // -------------------------------------------------------------------------
     always_comb begin
-        mem_bus_if[0].req_valid      = mem_if[0].req_valid;
-        mem_bus_if[0].req_data       = '0;
-        mem_bus_if[0].req_data.rw    = req_is_write;
-        mem_bus_if[0].req_data.addr  = aligned_addr;
+        mem_bus_if[0].req_valid = mem_if[0].req_valid;
+        mem_bus_if[0].req_data = '0;
+        mem_bus_if[0].req_data.rw = req_is_write;
+        mem_bus_if[0].req_data.addr = aligned_addr;
         // Writes update only the PTE's bytes within the line; the wdata and byte
         // enables are shifted to the PTE's offset. Reads enable the whole word.
         mem_bus_if[0].req_data.byteen = req_is_write
             ? WORD_SIZE'(mem_if[0].req_wbe) << word_offset
             : {WORD_SIZE{1'b1}};
-        mem_bus_if[0].req_data.data  = LINE_BITS'(mem_if[0].req_wdata) << (word_offset * 8);
+        mem_bus_if[0].req_data.data = LINE_BITS'(mem_if[0].req_wdata) << (word_offset * 8);
         mem_bus_if[0].req_data.flags = '0;  // < global memory access
         // Tag is all zeros: UUID=0 (debug), ClientID injected downstream.
-        mem_bus_if[0].req_data.tag   = '0;
+        mem_bus_if[0].req_data.tag = '0;
     end
     assign mem_if[0].req_ready = mem_bus_if[0].req_ready;
 
     // The only retained state: the byte offset of the outstanding read, latched
     // on req-fire so the response extraction matches even if the PTW advances.
-    wire req_fire = mem_if[0].req_valid && mem_bus_if[0].req_ready;
+    wire                         req_fire = mem_if[0].req_valid && mem_bus_if[0].req_ready;
     logic [ADDR_OFFSET_BITS-1:0] word_offset_r;
     always_ff @(posedge clk) begin
         if (reset) word_offset_r <= '0;

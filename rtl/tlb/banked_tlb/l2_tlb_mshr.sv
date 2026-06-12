@@ -11,7 +11,7 @@ module l2_tlb_mshr #(
     input logic clk_i,
     input logic rst_i,
 
-    // Allocate
+    // Allocate (slave)
     input  logic                    allocate_valid_i,
     output logic                    allocate_ready_o,
     input  logic [   VPN_WIDTH-1:0] allocate_vpn_i,
@@ -19,7 +19,7 @@ module l2_tlb_mshr #(
     input  logic                    allocate_set_dirty_i,  // store (needs dirty)
     input  logic [CORE_ID_SIZE-1:0] allocate_core_id_i,
 
-    // Issue (to PTW)
+    // Issue (master)
     output logic                  issue_valid_o,
     input  logic                  issue_ready_i,
     output logic [     TAG_W-1:0] issue_id_o,
@@ -27,7 +27,7 @@ module l2_tlb_mshr #(
     output logic [ASID_WIDTH-1:0] issue_asid_o,
     output logic                  issue_set_dirty_o,
 
-    // Fill (from PTW, keyed by tag)
+    // Fill (slave)
     input  logic                           fill_valid_i,
     output logic                           fill_ready_o,
     input  logic          [     TAG_W-1:0] fill_id_i,
@@ -35,7 +35,7 @@ module l2_tlb_mshr #(
     input  logic          [LEVEL_BITS-1:0] fill_level_i,
     input  logic                           fill_error_i,
 
-    // Deliver (to the deliver engine; snapshot + advance/free)
+    // Deliver (master)
     output logic                           deliver_valid_o,
     input  logic                           deliver_ready_i,
     output logic          [ NUM_CORES-1:0] deliver_cores_o,
@@ -44,10 +44,7 @@ module l2_tlb_mshr #(
     output logic                           deliver_error_o,
     output logic          [ VPN_WIDTH-1:0] deliver_vpn_o,
     output logic          [ASID_WIDTH-1:0] deliver_asid_o,
-    output logic                           deliver_write_cache_o, // terminal & !error
-
-    // Issue-pending bitmask (one bit per slot in a *_PENDING_ISSUE state)
-    output logic [MSHR_SIZE-1:0] pending_entries_o
+    output logic                           deliver_write_cache_o
 );
 
     // -------------------------------------------------------------------------
@@ -111,13 +108,14 @@ module l2_tlb_mshr #(
     assign deliver_asid_o        = mshr_entries[deliver_id].asid;
     assign deliver_write_cache_o = deliver_terminal && !mshr_entries[deliver_id].error;
 
-    wire deliver_fire = deliver_valid_o && deliver_ready_i;
+    wire                  deliver_fire = deliver_valid_o && deliver_ready_i;
 
     // -------------------------------------------------------------------------
     // Issue select: first *_PENDING_ISSUE slot
     // -------------------------------------------------------------------------
+    logic [MSHR_SIZE-1:0] pending_entries;
     for (genvar i = 0; i < MSHR_SIZE; i++) begin : g_pending
-        assign pending_entries_o[i] = (mshr_entries[i].state == ES_CLEAN_PENDING_ISSUE)
+        assign pending_entries[i] = (mshr_entries[i].state == ES_CLEAN_PENDING_ISSUE)
                                    || (mshr_entries[i].state == ES_DIRTY_PENDING_ISSUE);
     end
 
@@ -126,7 +124,7 @@ module l2_tlb_mshr #(
     VX_priority_encoder #(
         .N(MSHR_SIZE)
     ) issue_sel (
-        .data_in  (pending_entries_o),
+        .data_in  (pending_entries),
         .index_out(issue_id),
         .valid_out(issue_valid),
         `UNUSED_PIN(onehot_out)
@@ -171,16 +169,15 @@ module l2_tlb_mshr #(
     // -------------------------------------------------------------------------
     // Free-slot allocator
     // -------------------------------------------------------------------------
-    logic mshr_full, mshr_empty;
+    logic             mshr_full;
     logic [TAG_W-1:0] alloc_id;
-    `UNUSED_VAR(mshr_empty)
 
     // ready drops on any deliver snapshot so no CAM write races the snapshot.
     assign allocate_ready_o = (hit_found || !mshr_full) && !deliver_fire;
 
     wire alloc_handshake = allocate_valid_i && allocate_ready_o;
     wire coalesce_fire = alloc_handshake && hit_found;
-    wire alloc_fire = alloc_handshake && !hit_found;  // ready => !mshr_full
+    wire alloc_fire = alloc_handshake && !hit_found;
 
     wire release_fire = deliver_fire && deliver_terminal;
 
@@ -193,14 +190,15 @@ module l2_tlb_mshr #(
         .acquire_addr(alloc_id),
         .release_en  (release_fire),
         .release_addr(deliver_id),
-        .empty       (mshr_empty),
+        `UNUSED_PIN(empty),
         .full        (mshr_full)
     );
 
     // -------------------------------------------------------------------------
-    // Coalesce routing (combinational next-fields for the hit slot)
+    // Coalesce routing
     // -------------------------------------------------------------------------
-    // Poison: a store the slot's clean walk cannot satisfy with a dirty PTE.
+    // Poison: while PTW is doing a clean walk, we coalesced a request with `set_dirty`
+    // `set_dirty` is bypassed during `ES_CLEAN_PENDING_ISSUE` stage to prevent lost write
     wire poison_now = allocate_set_dirty_i
                    && (!mshr_entries[hit_found_id].set_dirty || mshr_entries[hit_found_id].dirty_poison)
                    && ((mshr_entries[hit_found_id].state == ES_CLEAN_PENDING_FILL)
@@ -222,13 +220,7 @@ module l2_tlb_mshr #(
     end
 
     // -------------------------------------------------------------------------
-    // State updates.  Per-slot fields written here are disjoint across the
-    // concurrent events that can target the SAME slot in a cycle:
-    //   coalesce -> {pending_cores, dirty_cores, set_dirty, dirty_poison}
-    //   reap     -> {state}            (slot was *_PENDING_ISSUE)
-    //   fill     -> {state, pte,...}   (slot was *_PENDING_FILL)
-    //   deliver  -> {state, ...}       (slot was *_PENDING_DELIVER)
-    // coalesce never coincides with deliver (allocate.ready=0 on deliver_fire).
+    // State updates
     // -------------------------------------------------------------------------
     always_ff @(posedge clk_i) begin
         if (rst_i) begin
@@ -254,11 +246,14 @@ module l2_tlb_mshr #(
                 mshr_entries[alloc_id].pending_cores[j] <= (j == int'(allocate_core_id_i));
             end
 
-            // Issue: PTW accepted the issued walk
+            // Issue: PTW accepts the issued walk
             if (issue_fire) begin
-                if (mshr_entries[issue_id].state == ES_CLEAN_PENDING_ISSUE)
+                if (mshr_entries[issue_id].state == ES_CLEAN_PENDING_ISSUE) begin
                     mshr_entries[issue_id].state <= ES_CLEAN_PENDING_FILL;
-                else mshr_entries[issue_id].state <= ES_DIRTY_PENDING_FILL;
+                end else begin
+                    assert (mshr_entries[issue_id].state == ES_DIRTY_PENDING_ISSUE);
+                    mshr_entries[issue_id].state <= ES_DIRTY_PENDING_FILL;
+                end
             end
 
             // Fill: capture the walk result
@@ -266,19 +261,21 @@ module l2_tlb_mshr #(
                 mshr_entries[fill_id_i].pte   <= fill_pte_i;
                 mshr_entries[fill_id_i].level <= fill_level_i;
                 // assert (!fill_error_i);
-                if (fill_error_i) begin
-                    $finish;
-                end
+                // if (fill_error_i) begin
+                //     $finish;
+                // end
                 mshr_entries[fill_id_i].error <= fill_error_i;
-                if (mshr_entries[fill_id_i].state == ES_CLEAN_PENDING_FILL)
+                if (mshr_entries[fill_id_i].state == ES_CLEAN_PENDING_FILL) begin
                     mshr_entries[fill_id_i].state <= ES_CLEAN_PENDING_DELIVER;
-                else mshr_entries[fill_id_i].state <= ES_DIRTY_PENDING_DELIVER;
+                end else begin
+                    assert (mshr_entries[fill_id_i].state == ES_DIRTY_PENDING_FILL);
+                    mshr_entries[fill_id_i].state <= ES_DIRTY_PENDING_DELIVER;
+                end
             end
 
             // Deliver: snapshot taken by the engine; advance or free the slot
             if (deliver_fire) begin
                 if (deliver_is_clean && deliver_poisoned) begin
-                    // recirculate for the dirty pass
                     mshr_entries[deliver_id].state         <= ES_DIRTY_PENDING_ISSUE;
                     mshr_entries[deliver_id].pending_cores <= mshr_entries[deliver_id].dirty_cores;
                     mshr_entries[deliver_id].dirty_cores   <= '0;

@@ -8,30 +8,27 @@ module l2_tlb_bank_response_engine
     input logic clk_i,
     input logic rst_i,
 
-    // MSHR deliver (slave): a coalesced core set + payload, taken in one fire.
+    // MSHR deliver (slave)
     input  logic                                         mshr_deliver_valid_i,
     output logic                                         mshr_deliver_ready_o,
     input  logic                         [NUM_CORES-1:0] mshr_deliver_cores_i,
     input  mmu_pkg::inter_tlb_rsp_data_t                 mshr_deliver_rsp_i,
 
-    // TLB hit (slave): a single core + payload.
+    // TLB hit (slave)
     input  logic                                         tlb_hit_valid_i,
     output logic                                         tlb_hit_ready_o,
     input  logic                         [CORE_ID_W-1:0] tlb_hit_core_i,
     input  mmu_pkg::inter_tlb_rsp_data_t                 tlb_hit_rsp_i,
 
-    // Bank response (master): one core / cycle.
+    // Bank response (master)
     output logic                                         rsp_valid_o,
     input  logic                                         rsp_ready_i,
     output mmu_pkg::inter_tlb_rsp_data_t                 rsp_data_o,
     output logic                         [CORE_ID_W-1:0] rsp_src_o
 );
 
-    // -------------------------------------------------------------------------
-    // Held group (single-buffered)
-    // -------------------------------------------------------------------------
-    logic                         [NUM_CORES-1:0] mask;  // cores still owed a response
-    mmu_pkg::inter_tlb_rsp_data_t                 data;  // payload broadcast to all of them
+    logic                         [NUM_CORES-1:0] mask_r;
+    mmu_pkg::inter_tlb_rsp_data_t                 data_r;
 
     // -------------------------------------------------------------------------
     // Pick the lowest pending core
@@ -42,27 +39,25 @@ module l2_tlb_bank_response_engine
         pick_idx = '0;
         pick_oh  = '0;
         for (int i = 0; i < NUM_CORES; i++) begin
-            if (mask[i] && (pick_oh == '0)) begin
+            if (mask_r[i] && (pick_oh == '0)) begin
                 pick_idx   = CORE_ID_W'(i);
                 pick_oh[i] = 1'b1;
             end
         end
     end
 
-    assign rsp_valid_o = (mask != '0);  // never depends on rsp_ready_i
-    assign rsp_data_o  = data;
+    assign rsp_valid_o = (mask_r != '0);
+    assign rsp_data_o  = data_r;
     assign rsp_src_o   = pick_idx;
 
-    // -------------------------------------------------------------------------
-    // Drain bookkeeping
-    // -------------------------------------------------------------------------
     wire                 rsp_fire = rsp_valid_o && rsp_ready_i;
-    wire [NUM_CORES-1:0] mask_after = mask & ~(rsp_fire ? pick_oh : '0);
-    wire                 free_next = (mask_after == '0);  // empty next cycle -> loadable now
+    wire [NUM_CORES-1:0] mask_after = mask_r & ~(rsp_fire ? pick_oh : '0);
+    wire                 free_next = (mask_after == '0);
 
     // -------------------------------------------------------------------------
-    // Load arbitration (deliver > hit).  A ready never depends on its OWN valid.
+    // Load arbitration (deliver > hit)
     // -------------------------------------------------------------------------
+    // MSHR deliver has higher priority (perhaps entries inside the TLB is stale)
     assign mshr_deliver_ready_o = free_next;
     assign tlb_hit_ready_o      = free_next && !mshr_deliver_valid_i;
 
@@ -72,24 +67,23 @@ module l2_tlb_bank_response_engine
     wire [NUM_CORES-1:0] hit_oh = (NUM_CORES'(1) << tlb_hit_core_i);
 
     // -------------------------------------------------------------------------
-    // Load / drain.  Load happens on the same cycle the last core drains, so
-    // back-to-back groups have no bubble; data is stable while draining.
+    // Load / drain
     // -------------------------------------------------------------------------
     always_ff @(posedge clk_i) begin
         if (rst_i) begin
-            mask <= '0;
+            mask_r <= '0;
         end else if (free_next) begin
-            if (load_deliver) begin
-                mask <= mshr_deliver_cores_i;
-                data <= mshr_deliver_rsp_i;
-            end else if (load_hit) begin
-                mask <= hit_oh;
-                data <= tlb_hit_rsp_i;
+            if (load_deliver) begin  // Accept a new MSHR deliver request
+                mask_r <= mshr_deliver_cores_i;
+                data_r <= mshr_deliver_rsp_i;
+            end else if (load_hit) begin  // Accept a TLB hit
+                mask_r <= hit_oh;
+                data_r <= tlb_hit_rsp_i;
             end else begin
-                mask <= '0;
+                mask_r <= '0;
             end
         end else begin
-            mask <= mask_after;
+            mask_r <= mask_after;
         end
     end
 

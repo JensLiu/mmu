@@ -1,13 +1,5 @@
 `include "VX_define.vh"
 
-// The adapter converts PTW memory requests to Vortex dcache format.
-// Supports both SV32 (XLEN=32, 4-byte PTEs) and SV39 (XLEN=64, 8-byte PTEs).
-// Assumptions:
-//  - PTW provides byte-aligned physical addresses (PTEs never straddle a line)
-//  - PTW holds the request stable until req_ready pulses
-//  - Single outstanding request at a time
-//  - Writes are posted: the dcache sends no write response, so the req_ready
-//    pulse is the only completion the PTW gets (see ptw_mem_if).
 module ptw_vxdcache_adapter #(
     parameter int unsigned NUM_PTWS = 1
 ) (
@@ -28,19 +20,9 @@ module ptw_vxdcache_adapter #(
 
     // Word address sent to the dcache (byte offset stripped).
     wire  [      ADDR_WIDTH-1:0] aligned_addr = ADDR_WIDTH'(mem_if[0].req_addr >> ADDR_OFFSET_BITS);
-    // Byte offset of the PTE within the dcache word.
     wire  [ADDR_OFFSET_BITS-1:0] word_offset = mem_if[0].req_addr[ADDR_OFFSET_BITS-1:0];
     wire                         req_is_write = (mem_if[0].req_cmd != mmu_pkg::PTW_MEM_READ);
-
-    // Registered word_offset for response extraction (captured at launch)
     logic [ADDR_OFFSET_BITS-1:0] word_offset_r;
-
-    // Request channel: capture the PTW request once, hold it on the bus until
-    // the dcache accepts it, then pulse req_ready back. The held request never
-    // changes or cancels mid-flight, and the PTW only advances on the pulse, so
-    // exactly one bus request fires per PTW request. req_sent suppresses a
-    // relaunch while the PTW is still holding req_valid (its ready/state path
-    // lags the pulse by a cycle).
     logic                        req_sent;
     always_ff @(posedge clk) begin
         if (reset) begin
@@ -86,11 +68,8 @@ module ptw_vxdcache_adapter #(
         end else begin
             mem_if[0].rsp_valid     <= mem_bus_if[0].rsp_valid;
             mem_if[0].rsp_error     <= 1'b0;  // no PTE-access fault reported by the dcache
-            // Extract one PTE (XLEN bits) at the byte offset within the cache word,
-            // then zero-extend to 64b (SV32: 32b->64b; SV39: 64b->64b). Uses the
-            // registered offset so it matches the original request.
             mem_if[0].rsp_data      <= 64'(mem_bus_if[0].rsp_data.data[word_offset_r*8+:XLEN]);
-            mem_bus_if[0].rsp_ready <= 1'b1;  // < the MMU always accepts the response
+            mem_bus_if[0].rsp_ready <= 1'b1;  // the MMU always accepts the response
         end
     end
 endmodule

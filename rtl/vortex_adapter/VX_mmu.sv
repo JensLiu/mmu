@@ -17,19 +17,15 @@ module VX_mmu #(
     VX_mem_bus_if.master   ptw_mem_bus_if[ NUM_PTW_PORTS]
 );
 
-    // iTLB / dTLB request-response interfaces (shared between the core adapter
-    // (master) and bsc_mmu (slave)).
     core_tlb_if itlb_core_if[NUM_ITLB_PORTS] ();
     core_tlb_if dtlb_core_if[NUM_DTLB_PORTS] ();
-    // CSR Interface
     mmu_pkg::csr_ptw_comm_t csr_ptw_comm_i;
+
     // TODO: currently only support RV32
     assign csr_ptw_comm_i.satp    = {{(64 - `XLEN) {1'b0}}, csr_mmu_if.satp};  // < zero-extend satp
     assign csr_ptw_comm_i.flush   = csr_mmu_if.flush_tlb;
     assign csr_ptw_comm_i.mstatus = mmu_pkg::csr_mstatus_t'(csr_mmu_if.mstatus);
 
-    // PTW - Memory Interface (ready/valid), shared between mmu (PTW) and the
-    // dcache adapter (memory side).
     ptw_mem_if ptw_mem_link[NUM_PTW_PORTS] ();
 
     mmu #(

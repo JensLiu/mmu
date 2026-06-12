@@ -88,8 +88,6 @@ module l1_tlb #(
         wire                 instr = core_if[p].req_data.instruction;
         mmu_pkg::tlb_entry_t entry = tlb_read_hit_entry[p];
 
-        // A read only fires when storage is ready; during a fill it blocks
-        // reads, so that cycle is neither a hit nor a miss (the request holds).
         wire                 read_fire = tlb_read_valid[p] && tlb_read_ready[p];
 
         assign tlb_read_valid[p] = req_valid && vm_enable;
@@ -112,15 +110,17 @@ module l1_tlb #(
             .exec_ok_o    (exec_ok)
         );
 
-        // Effective hit: resident, accessed, and (for a store) dirty-or-not-
-        // permitted. A store-to-clean (store_hit==0) and a hit with access==0
-        // both fall through to the miss path so the walk sets the A/D bits.
+        // Storing to clean pages is considered a miss:
+        //  - needs PTW to write to memory, or
+        //  - L2 TLB to get the updated D/A bit (since other cores may already have set it)
+        //  Access bit is preset, and NOT implemented in this case by L2/PTW.
+        //  If not preset, we may have a livelock issue
         assign read_effective_hit[p]  = read_cam_hit[p] && entry.access && store_hit;
         assign read_effective_miss[p] = read_fire && !read_effective_hit[p];
 
         // Permission faults are re-derivable from the resident entry, so they
-        // ride the hit path (gated by the access type). PTW page faults (no
-        // resident entry) are added from the engine below.
+        // ride the hit path (gated by the access type).
+        // PTW page faults (no resident entry) are added from the engine below.
         assign xcpt_if[p]             = read_effective_hit[p] && instr && !exec_ok;
         assign xcpt_st[p]             = read_effective_hit[p] && store && !write_ok;
         assign xcpt_ld[p]             = read_effective_hit[p] && !store && !instr && !read_ok;
@@ -219,10 +219,6 @@ module l1_tlb #(
 
     // ---------------------------------------------------------
     // TLB response
-    //   rsp_valid: a definitive answer exists (effective hit, fault, or a no-VM
-    //   pass-through). A still-walking miss leaves rsp_valid low.
-    //   req_ready: storage accepts the lookup this cycle (low during a
-    //   fill/clear, so the requester holds).
     // ---------------------------------------------------------
     for (genvar p = 0; p < NUM_TLB_PORTS; ++p) begin : g_tlb_rsp
         wire vm_enable = core_if[p].req_data.vm_enable;
