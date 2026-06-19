@@ -1,5 +1,5 @@
 /*
- * Copyright 2025 BSC*
+ * Copyright 2026 BSC*
  * *Barcelona Supercomputing Center (BSC)
  *
  * SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
@@ -18,8 +18,6 @@
  * under the License.
  */
 
-// PTW <-> memory. Reads get a response on the rsp_* channel; writes are
-// posted: acceptance (req_ready) is the only completion, no response follows.
 interface ptw_mem_if #(
     parameter  int unsigned XLEN        = mmu_pkg::XLEN,
     localparam int unsigned PADDR_WIDTH = mmu_pkg::PADDR_WIDTH,

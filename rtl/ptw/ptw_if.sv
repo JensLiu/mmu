@@ -20,36 +20,36 @@
 
 interface ptw_if;
 
-    logic                   req_valid, req_ready;
-    mmu_pkg::ptw_req_data_t  req_data;
+    logic req_valid, req_ready;
+    mmu_pkg::ptw_req_data_t req_data;
 
-    logic                   rsp_valid, rsp_ready;
-    mmu_pkg::ptw_rsp_data_t  rsp_data;
+    logic rsp_valid, rsp_ready;
+    mmu_pkg::ptw_rsp_data_t rsp_data;
 
     logic                   invalidate_tlb;
 
     // TLB side: drives requests, consumes responses.
-    modport master (
+    modport master(
         output req_valid,
         output req_data,
-        input  req_ready,
+        input req_ready,
 
-        input  rsp_valid,
-        input  rsp_data,
+        input rsp_valid,
+        input rsp_data,
         output rsp_ready,
 
-        input  invalidate_tlb
+        input invalidate_tlb
     );
 
     // PTW side: consumes requests, drives responses + the flush broadcast.
-    modport slave (
-        input  req_valid,
-        input  req_data,
+    modport slave(
+        input req_valid,
+        input req_data,
         output req_ready,
 
         output rsp_valid,
         output rsp_data,
-        input  rsp_ready,
+        input rsp_ready,
 
         output invalidate_tlb
     );

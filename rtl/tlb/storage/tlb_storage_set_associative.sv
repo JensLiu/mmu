@@ -1,5 +1,5 @@
 /*
- * Copyright 2025 BSC*
+ * Copyright 2026 BSC*
  * *Barcelona Supercomputing Center (BSC)
  *
  * SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
@@ -65,9 +65,9 @@ module tlb_storage_set_associative #(
     } tlb_set_t;
     tlb_set_t tlb_sets[NUM_TLB_SETS];
 
-    // Ready/valid exclusivity: clear > write > read
+    // Ready/valid exclusivity: clear = write > read
     assign clear_ready_o = 1'b1;
-    assign write_ready_o = !clear_valid_i;
+    assign write_ready_o = 1'b1;
     assign read_ready_o  = !clear_valid_i && !write_valid_i;
     wire read_fire = read_valid_i && read_ready_o;
     wire write_fire = write_valid_i && write_ready_o;

@@ -10,14 +10,20 @@
  * License at
  *
  * https://solderpad.org/licenses/SHL-2.1/
+ *
+ * Unless required by applicable law or agreed to in writing, any work
+ * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ * WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ * License for the specific language governing permissions and limitations
+ * under the License.
  */
 
 module ptw_cache
     import mmu_pkg::*;
 #(
     parameter int unsigned NUM_ENTRIES = mmu_pkg::PTW_CACHE_SIZE,
-    parameter int unsigned TAG_WIDTH   = mmu_pkg::PADDR_WIDTH,  // tags are PTE physical addresses
-    parameter int unsigned DATA_WIDTH  = mmu_pkg::PPN_WIDTH
+    parameter int unsigned TAG_WIDTH = mmu_pkg::PADDR_WIDTH,  // tags are PTE physical addresses
+    parameter int unsigned DATA_WIDTH = mmu_pkg::PPN_WIDTH
 ) (
     input logic clk_i,
     input logic rst_i,

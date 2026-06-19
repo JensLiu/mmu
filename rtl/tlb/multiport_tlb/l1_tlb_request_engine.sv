@@ -15,58 +15,45 @@
 module l1_tlb_request_engine
     import mmu_pkg::*;
 #(
-    parameter  int unsigned NUM_TLB_PORTS = 1,
-    localparam int unsigned PORT_IDX_WIDTH    = (NUM_TLB_PORTS > 1) ? $clog2(NUM_TLB_PORTS) : 1
+    parameter  int unsigned NUM_TLB_PORTS  = 1,
+    localparam int unsigned PORT_IDX_WIDTH = (NUM_TLB_PORTS > 1) ? $clog2(NUM_TLB_PORTS) : 1
 ) (
     input logic clk_i,
     input logic rst_i,
 
-    // Per-port effective miss + request payload. req_data_i[p].set_dirty is set
-    // when this port is a store needing a dirty walk; OR-coalesced below so an
-    // aliased dirty store upgrades the shared walk.
     input logic                         [NUM_TLB_PORTS-1:0] eff_miss_i,
     input mmu_pkg::inter_tlb_req_data_t                     req_data_i[NUM_TLB_PORTS],
 
-    // Fill into the CAM (success response only). vpn/asid come from the latched
-    // in-flight request; the rest of the entry from the L2 response.
-    output logic                       fill_valid_o,
-    output tlb_entry_t                 fill_entry_o,
+    output logic                        fill_valid_o,
+    output tlb_entry_t                  fill_entry_o,
     output logic       [ VPN_WIDTH-1:0] fill_vpn_o,
     output logic       [ASID_WIDTH-1:0] fill_asid_o,
 
-    input  logic [NUM_TLB_PORTS-1:0] rsp_ready_i,  // core ready to accept fault delivery
-    // Per-port PTW page-fault delivery, held until acknowledged.
-    output logic [NUM_TLB_PORTS-1:0] fault_valid_o,
+    input  logic [NUM_TLB_PORTS-1:0] rsp_ready_i,   // core ready to accept fault delivery
+    output logic [NUM_TLB_PORTS-1:0] fault_valid_o, // held until acknowledged.
 
     // Broadcast flush from L2 (registered).
     output logic invalidate_o,
 
-    // Fire-once L2 link.
     inter_tlb_if.master l2_if
 );
 
-    // -------------------------------------------------------------------------
-    // Request lifecycle FSM
-    // -------------------------------------------------------------------------
     typedef enum logic [2:0] {
-        PS_IDLE,
-        PS_GET_MISS,
-        PS_SEND,
-        PS_WAIT_RESPONSE,
-        PS_FAULT_DRAIN,
-        PS_INVALIDATED_WAIT_RESPONSE
+        S_IDLE,
+        S_GET_MISS,
+        S_SEND,
+        S_WAIT_RESPONSE,
+        S_FAULT_DRAIN,
+        S_INVALIDATED_WAIT_RESPONSE
     } req_state_t;
     req_state_t req_state, req_state_n;
 
     // -------------------------------------------------------------------------
-    // Miss arbiter: round-robin, sticky.  We accept a grant only while idle
-    // (grant_ready), latch the winner in PS_GET_MISS, and hold it for the rest
-    // of the transaction.  Sticky keeps grant_index stable on the granted port
-    // until it stops missing (served / faulted+acked).
+    // Miss arbiter
     // -------------------------------------------------------------------------
     logic [PORT_IDX_WIDTH-1:0] grant_index;
-    logic                  grant_valid;
-    wire                   grant_ready = (req_state == PS_IDLE);
+    logic                      grant_valid;
+    wire                       grant_ready = (req_state == S_IDLE);
 
     VX_generic_arbiter #(
         .NUM_REQS(NUM_TLB_PORTS),
@@ -82,16 +69,13 @@ module l1_tlb_request_engine
         .grant_ready(grant_ready)
     );
 
-    // Latched granted port, valid from PS_SEND onwards.
     logic [PORT_IDX_WIDTH-1:0] port_idx_q;
-    // Clamp for the single-port case (--x-initial can init a 1-bit reg to 1,
-    // an out-of-bounds index before the synchronous reset takes effect).
+    // `--x-initial` can init a 1-bit reg to 1, which is an out-of-bounds index
+    // before the synchronous reset takes effect
     wire  [PORT_IDX_WIDTH-1:0] port_idx = (NUM_TLB_PORTS == 1) ? '0 : port_idx_q;
 
     // -------------------------------------------------------------------------
-    // Register the L2 response. rsp_ready=1: the engine is one-outstanding, so
-    // it always accepts the response it awaits. Registering breaks the comb
-    // feedback from the response path back into request generation.
+    // Register the L2 response
     // -------------------------------------------------------------------------
     assign l2_if.rsp_ready = 1'b1;
     logic                rsp_valid_q;
@@ -107,28 +91,27 @@ module l1_tlb_request_engine
             invalidate_q <= l2_if.invalidate_tlb;
         end
     end
+    wire rsp_error = rsp_data_q.error;
     assign invalidate_o = invalidate_q;
-    wire                      rsp_error = rsp_data_q.error;
 
     // -------------------------------------------------------------------------
-    // In-flight key: latched when the walk fires; used to coalesce same-VPN
-    // ports and to route the fault to them.
+    // In-flight key
     // -------------------------------------------------------------------------
-    logic [     VPN_WIDTH-1:0] inflight_vpn_q;
-    logic [    ASID_WIDTH-1:0] inflight_asid_q;
+    logic [    VPN_WIDTH-1:0] inflight_vpn_q;
+    logic [   ASID_WIDTH-1:0] inflight_asid_q;
 
     logic [NUM_TLB_PORTS-1:0] inflight_match;
     for (genvar p = 0; p < NUM_TLB_PORTS; p++) begin : g_inflight_match
         assign inflight_match[p] = (req_data_i[p].vpn  == inflight_vpn_q)
                                 && (req_data_i[p].asid == inflight_asid_q);
     end
-    // Ports that are missing AND aliased to the in-flight walk = the fault set.
+    // Fault set: ports that are missing AND aliased to the in-flight walk
     wire  [NUM_TLB_PORTS-1:0] fault_match = eff_miss_i & inflight_match;
 
     // -------------------------------------------------------------------------
     // Outgoing L2 request
     // -------------------------------------------------------------------------
-    logic                     l2_set_dirty; // coaleased dirty walk
+    logic                     l2_set_dirty;  // coaleased dirty walk
     always_comb begin
         l2_set_dirty = 1'b0;
         for (int p = 0; p < NUM_TLB_PORTS; p++) begin
@@ -142,7 +125,7 @@ module l1_tlb_request_engine
 
     inter_tlb_req_data_t l2_req;
     always_comb begin
-        l2_req               = req_data_i[port_idx];
+        l2_req           = req_data_i[port_idx];
         l2_req.set_dirty = l2_set_dirty;
     end
     assign l2_if.req_data = l2_req;
@@ -155,7 +138,7 @@ module l1_tlb_request_engine
     wire [NUM_TLB_PORTS-1:0] fault_ack = fault_valid_o & rsp_ready_i;
     wire                     fault_busy = |fault_pending;
 
-    assign fault_valid_o = (req_state == PS_FAULT_DRAIN) ? fault_pending : '0;
+    assign fault_valid_o = (req_state == S_FAULT_DRAIN) ? fault_pending : '0;
 
     logic write_tlb;
     logic fault_capture;
@@ -164,63 +147,58 @@ module l1_tlb_request_engine
         write_tlb     = 1'b0;
         fault_capture = 1'b0;
         if (rst_i) begin
-            req_state_n = PS_IDLE;
+            req_state_n = S_IDLE;
         end else begin
             case (req_state)
-                PS_IDLE: begin
-                    if (grant_valid && !fault_busy) req_state_n = PS_GET_MISS;
+                S_IDLE: begin
+                    if (grant_valid && !fault_busy) req_state_n = S_GET_MISS;
                 end
-                PS_GET_MISS: begin
-                    req_state_n = PS_SEND;  // winner latched into port_idx_q
+                S_GET_MISS: begin
+                    req_state_n = S_SEND;  // winner latched into port_idx_q
                 end
-                PS_SEND: begin
+                S_SEND: begin
                     if (!granted_miss) begin
-                        req_state_n = PS_IDLE;  // squashed before the fire
+                        req_state_n = S_IDLE;  // squashed before the fire
                     end else if (req_fire) begin
-                        req_state_n = invalidate_q ?
-                        PS_INVALIDATED_WAIT_RESPONSE : PS_WAIT_RESPONSE;
+                        req_state_n = invalidate_q ? S_INVALIDATED_WAIT_RESPONSE : S_WAIT_RESPONSE;
                     end else if (invalidate_q) begin
-                        req_state_n = PS_IDLE;  // TLBI before the fire -> abort
+                        req_state_n = S_IDLE;  // TLBI before the fire -> abort
                     end
                 end
-                PS_WAIT_RESPONSE: begin
+                S_WAIT_RESPONSE: begin
                     if (rsp_valid_q) begin
                         if (rsp_error) begin
                             fault_capture = 1'b1;
-                            req_state_n   = PS_FAULT_DRAIN;
+                            req_state_n   = S_FAULT_DRAIN;
                         end else begin
                             write_tlb   = 1'b1;
-                            req_state_n = PS_IDLE;
+                            req_state_n = S_IDLE;
                         end
                     end else if (invalidate_q) begin
-                        req_state_n = PS_INVALIDATED_WAIT_RESPONSE;
+                        req_state_n = S_INVALIDATED_WAIT_RESPONSE;
                     end
                 end
-                PS_FAULT_DRAIN: begin
+                S_FAULT_DRAIN: begin
                     if (fault_pending_n == '0) begin
-                        req_state_n = PS_IDLE;
+                        req_state_n = S_IDLE;
                     end
                 end
-                PS_INVALIDATED_WAIT_RESPONSE: begin
+                S_INVALIDATED_WAIT_RESPONSE: begin
                     if (rsp_valid_q) begin
-                        req_state_n = PS_IDLE;
+                        req_state_n = S_IDLE;
                     end
                 end
                 default: begin
-                    req_state_n = PS_IDLE;
+                    req_state_n = S_IDLE;
                 end
             endcase
         end
     end
 
-    // Capture the coalesced faulting set on the error response; drain by acks.
-    // Late same-VPN arrivals are NOT folded in (they would re-assert eff_miss in
-    // the same cycle they are acked and stall the drain); they simply re-walk
-    // and re-fault after the engine returns to IDLE.
     always_comb begin
         if (fault_capture) begin
             fault_pending_n = fault_match;
-        end else if (req_state == PS_FAULT_DRAIN) begin
+        end else if (req_state == S_FAULT_DRAIN) begin
             fault_pending_n = fault_pending & ~fault_ack;
         end else begin
             fault_pending_n = '0;
@@ -229,13 +207,13 @@ module l1_tlb_request_engine
 
     always_ff @(posedge clk_i) begin
         if (rst_i) begin
-            req_state     <= PS_IDLE;
+            req_state     <= S_IDLE;
             fault_pending <= '0;
             port_idx_q    <= '0;
         end else begin
             req_state     <= req_state_n;
             fault_pending <= fault_pending_n;
-            if (req_state == PS_GET_MISS) begin
+            if (req_state == S_GET_MISS) begin
                 port_idx_q <= grant_index;
             end
         end
@@ -252,8 +230,8 @@ module l1_tlb_request_engine
         end
     end
 
-    // Present the request once, only while in PS_SEND.
-    assign l2_if.req_valid = (req_state == PS_SEND);
+    // Present the request once, only while in S_SEND.
+    assign l2_if.req_valid = (req_state == S_SEND);
 
     // Fill (success response only).
     assign fill_valid_o    = write_tlb;
