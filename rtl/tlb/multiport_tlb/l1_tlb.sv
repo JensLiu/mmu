@@ -86,8 +86,6 @@ module l1_tlb #(
         wire                 req_valid = core_if[p].req_valid;
         wire                 store = core_if[p].req_data.store;
         wire                 instr = core_if[p].req_data.instruction;
-        mmu_pkg::tlb_entry_t entry = tlb_read_hit_entry[p];
-
         wire                 read_fire = tlb_read_valid[p] && tlb_read_ready[p];
 
         assign tlb_read_valid[p] = req_valid && vm_enable;
@@ -101,7 +99,7 @@ module l1_tlb #(
 
         logic store_hit, read_ok, write_ok, exec_ok;
         pte_perm_check pte_perm_check_it (
-            .tlb_entry_i  (entry),
+            .tlb_entry_i  (tlb_read_hit_entry[p]),
             .sv_priv_lvl_i(core_if[p].req_data.priv_lvl != '0),
             .is_store_i   (store),
             .store_hit_o  (store_hit),
@@ -115,7 +113,7 @@ module l1_tlb #(
         //  - L2 TLB to get the updated D/A bit (since other cores may already have set it)
         //  Access bit is preset, and NOT implemented in this case by L2/PTW.
         //  If not preset, we may have a livelock issue
-        assign read_effective_hit[p]  = read_cam_hit[p] && entry.access && store_hit;
+        assign read_effective_hit[p]  = read_cam_hit[p] && tlb_read_hit_entry[p].access && store_hit;
         assign read_effective_miss[p] = read_fire && !read_effective_hit[p];
 
         // Permission faults are re-derivable from the resident entry, so they
@@ -183,8 +181,7 @@ module l1_tlb #(
     logic [mmu_pkg::PPN_WIDTH-1:0] ppn_translated_per_port[NUM_TLB_PORTS];
     for (genvar p = 0; p < NUM_TLB_PORTS; ++p) begin : g_ppn_assignment
         wire                 vm_enable = core_if[p].req_data.vm_enable;
-        mmu_pkg::tlb_entry_t entry = tlb_read_hit_entry[p];
-        `UNUSED_VAR(entry)  // only entry.ppn is used in the PPN assembly
+        wire [mmu_pkg::PPN_WIDTH-1:0] tlb_read_hit_ppn = tlb_read_hit_entry[p].ppn;
 
         for (genvar lvl = 0; lvl < mmu_pkg::LEVELS; ++lvl) begin : g_hit_per_lvl
             assign hit_per_port_per_lvl[p][lvl] =
@@ -194,10 +191,10 @@ module l1_tlb #(
         for (genvar ppn_l = 0; ppn_l < mmu_pkg::LEVELS; ppn_l++) begin : g_ppn_per_lvl
             localparam int SUPER_PAGE_BITS = (mmu_pkg::LEVELS - 1 - ppn_l) * mmu_pkg::PAGE_LVL_BITS;
             if (SUPER_PAGE_BITS == 0) begin : g_kilo
-                assign ppn_per_port_per_lvl[p][ppn_l] = entry.ppn;
+                assign ppn_per_port_per_lvl[p][ppn_l] = tlb_read_hit_ppn;
             end else begin : g_super
                 assign ppn_per_port_per_lvl[p][ppn_l] = {
-                    entry.ppn[mmu_pkg::PPN_WIDTH-1 : SUPER_PAGE_BITS],
+                    tlb_read_hit_ppn[mmu_pkg::PPN_WIDTH-1 : SUPER_PAGE_BITS],
                     vpn_per_port[p][SUPER_PAGE_BITS-1 : 0]
                 };
             end
@@ -223,12 +220,10 @@ module l1_tlb #(
     for (genvar p = 0; p < NUM_TLB_PORTS; ++p) begin : g_tlb_rsp
         wire vm_enable = core_if[p].req_data.vm_enable;
         wire req_valid = core_if[p].req_valid;
-        wire pass = !vm_enable;
 
         assign core_if[p].req_ready = tlb_read_ready[p];
-
         assign core_if[p].rsp_valid =
-            req_valid && (pass || read_effective_hit[p] || fault_valid[p]);
+            req_valid && (!vm_enable || read_effective_hit[p] || fault_valid[p]);
         assign core_if[p].rsp_data.ppn = ppn_translated_per_port[p];
 
         // Exceptions: permission faults on the hit path, plus the PTW page

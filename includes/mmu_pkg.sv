@@ -207,15 +207,40 @@ package mmu_pkg;
     // ---------------------------------------------------------
     // L2 TLB <-> PTW
     // ---------------------------------------------------------
+
+    // pte_t -> payload / cache entry helpers
+    /* verilator lint_off UNUSEDSIGNAL */
+    function automatic mmu_pkg::tlb_entry_t tlb_entry_from_pte(
+        input logic [VPN_WIDTH-1:0] vpn,
+        input logic [ASID_WIDTH-1:0] asid,
+        input mmu_pkg::pte_t pte,
+        input logic [LEVEL_BITS-1:0] level,
+        input logic error);
+        tlb_entry_from_pte.vpn      = vpn;
+        tlb_entry_from_pte.asid     = asid;
+        tlb_entry_from_pte.ppn      = pte.ppn;
+        tlb_entry_from_pte.level    = LEVEL_BITS'(level);
+        tlb_entry_from_pte.dirty    = pte.d;
+        tlb_entry_from_pte.access   = pte.a;
+        tlb_entry_from_pte.perms.ur = pte.r & pte.u & pte.v;
+        tlb_entry_from_pte.perms.uw = pte.w & pte.u & pte.v;
+        tlb_entry_from_pte.perms.ux = pte.x & pte.u & pte.v;
+        tlb_entry_from_pte.perms.sr = pte.r & ~pte.u & pte.v;
+        tlb_entry_from_pte.perms.sw = pte.w & ~pte.u & pte.v;
+        tlb_entry_from_pte.perms.sx = pte.x & ~pte.u & pte.v;
+        tlb_entry_from_pte.valid    = !error;
+    endfunction
+    /* verilator lint_on UNUSEDSIGNAL */
+
     // The PTW echoes this tag opaquely. It has two owners with disjoint fields:
     //   .mshr_slot - the requesting bank's MSHR slot id (bank-private; routes the fill)
     //   .bank      - the bank id, stamped by the PTW scheduler (routes the response)
     // Each layer touches only its own field, so neither hard-codes bit positions.
     // Widths are design maxima (>= any bank's MSHR_TAG_W / clog2(NUM_BANKS)).
-    parameter PTW_TAG_SLOT_WIDTH = 4;  // up to 16 MSHR slots per bank
-    parameter PTW_TAG_BANK_WIDTH = 4;  // up to 16 banks
-    parameter PTW_TAG_TLB_SET_WIDTH = 8;  // up to 256 TLB sets
-    parameter PTW_TAG_WIDTH = PTW_TAG_BANK_WIDTH + PTW_TAG_SLOT_WIDTH + PTW_TAG_TLB_SET_WIDTH;
+    parameter int unsigned PTW_TAG_SLOT_WIDTH = 4;  // up to 16 MSHR slots per bank
+    parameter int unsigned PTW_TAG_BANK_WIDTH = 4;  // up to 16 banks
+    parameter int unsigned PTW_TAG_TLB_SET_WIDTH = 8;  // up to 256 TLB sets
+    parameter int unsigned PTW_TAG_WIDTH = PTW_TAG_BANK_WIDTH + PTW_TAG_SLOT_WIDTH + PTW_TAG_TLB_SET_WIDTH;
 
     typedef struct packed {
         logic [PTW_TAG_BANK_WIDTH-1:0]    bank;       // owned by the scheduler
@@ -223,19 +248,19 @@ package mmu_pkg;
         logic [PTW_TAG_TLB_SET_WIDTH-1:0] tlb_set;    // owned by the TLB
     } ptw_tag_t;
 
-    typedef struct packed {
-        logic [VPN_WIDTH-1:0]  vpn;
-        logic [ASID_WIDTH-1:0] asid;
-        logic                  set_dirty;
-        ptw_tag_t              tag;
-    } ptw_req_data_t;
-
-    typedef struct packed {
-        pte_t                  pte;
-        logic [LEVEL_BITS-1:0] level;
-        logic                  error;
-        ptw_tag_t              tag;
-    } ptw_rsp_data_t;
+    // typedef struct packed {
+    //     logic [VPN_WIDTH-1:0]  vpn;
+    //     logic [ASID_WIDTH-1:0] asid;
+    //     logic                  set_dirty;
+    //     ptw_tag_t              tag;
+    // } ptw_req_data_t;
+    //
+    // typedef struct packed {
+    //     pte_t                  pte;
+    //     logic [LEVEL_BITS-1:0] level;
+    //     logic                  error;
+    //     ptw_tag_t              tag;
+    // } ptw_rsp_data_t;
 
     // ---------------------------------------------------------
     // PTW internal

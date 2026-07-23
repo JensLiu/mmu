@@ -83,10 +83,10 @@ module l1_tlb_request_engine
     );
 
     // Latched granted port, valid from PS_SEND onwards.
-    logic [PORT_IDX_WIDTH-1:0] port_idx_q;
+    logic [PORT_IDX_WIDTH-1:0] port_idx_r;
     // Clamp for the single-port case (--x-initial can init a 1-bit reg to 1,
     // an out-of-bounds index before the synchronous reset takes effect).
-    wire  [PORT_IDX_WIDTH-1:0] port_idx = (NUM_TLB_PORTS == 1) ? '0 : port_idx_q;
+    wire  [PORT_IDX_WIDTH-1:0] port_idx = (NUM_TLB_PORTS == 1) ? '0 : port_idx_r;
 
     // -------------------------------------------------------------------------
     // Register the L2 response. rsp_ready=1: the engine is one-outstanding, so
@@ -94,33 +94,33 @@ module l1_tlb_request_engine
     // feedback from the response path back into request generation.
     // -------------------------------------------------------------------------
     assign l2_if.rsp_ready = 1'b1;
-    logic                rsp_valid_q;
-    inter_tlb_rsp_data_t rsp_data_q;
-    logic                invalidate_q;
+    logic                rsp_valid_r;
+    mmu_pkg::inter_tlb_rsp_data_t rsp_data_r;
+    logic                invalidate_r;
     always_ff @(posedge clk_i) begin
         if (rst_i) begin
-            rsp_valid_q  <= 1'b0;
-            invalidate_q <= 1'b0;
+            rsp_valid_r  <= 1'b0;
+            invalidate_r <= 1'b0;
         end else begin
-            rsp_valid_q  <= l2_if.rsp_valid;
-            rsp_data_q   <= l2_if.rsp_data;
-            invalidate_q <= l2_if.invalidate_tlb;
+            rsp_valid_r  <= l2_if.rsp_valid;
+            rsp_data_r   <= l2_if.rsp_data;
+            invalidate_r <= l2_if.invalidate_tlb;
         end
     end
-    assign invalidate_o = invalidate_q;
-    wire                      rsp_error = rsp_data_q.error;
+    assign invalidate_o = invalidate_r;
+    wire                      rsp_error = rsp_data_r.error;
 
     // -------------------------------------------------------------------------
     // In-flight key: latched when the walk fires; used to coalesce same-VPN
     // ports and to route the fault to them.
     // -------------------------------------------------------------------------
-    logic [     VPN_WIDTH-1:0] inflight_vpn_q;
-    logic [    ASID_WIDTH-1:0] inflight_asid_q;
+    logic [     VPN_WIDTH-1:0] inflight_vpn_r;
+    logic [    ASID_WIDTH-1:0] inflight_asid_r;
 
     logic [NUM_TLB_PORTS-1:0] inflight_match;
     for (genvar p = 0; p < NUM_TLB_PORTS; p++) begin : g_inflight_match
-        assign inflight_match[p] = (req_data_i[p].vpn  == inflight_vpn_q)
-                                && (req_data_i[p].asid == inflight_asid_q);
+        assign inflight_match[p] = (req_data_i[p].vpn  == inflight_vpn_r)
+                                && (req_data_i[p].asid == inflight_asid_r);
     end
     // Ports that are missing AND aliased to the in-flight walk = the fault set.
     wire  [NUM_TLB_PORTS-1:0] fault_match = eff_miss_i & inflight_match;
@@ -171,20 +171,20 @@ module l1_tlb_request_engine
                     if (grant_valid && !fault_busy) req_state_n = PS_GET_MISS;
                 end
                 PS_GET_MISS: begin
-                    req_state_n = PS_SEND;  // winner latched into port_idx_q
+                    req_state_n = PS_SEND;  // winner latched into port_idx_r
                 end
                 PS_SEND: begin
                     if (!granted_miss) begin
                         req_state_n = PS_IDLE;  // squashed before the fire
                     end else if (req_fire) begin
-                        req_state_n = invalidate_q ?
+                        req_state_n = invalidate_r ?
                         PS_INVALIDATED_WAIT_RESPONSE : PS_WAIT_RESPONSE;
-                    end else if (invalidate_q) begin
+                    end else if (invalidate_r) begin
                         req_state_n = PS_IDLE;  // TLBI before the fire -> abort
                     end
                 end
                 PS_WAIT_RESPONSE: begin
-                    if (rsp_valid_q) begin
+                    if (rsp_valid_r) begin
                         if (rsp_error) begin
                             fault_capture = 1'b1;
                             req_state_n   = PS_FAULT_DRAIN;
@@ -192,7 +192,7 @@ module l1_tlb_request_engine
                             write_tlb   = 1'b1;
                             req_state_n = PS_IDLE;
                         end
-                    end else if (invalidate_q) begin
+                    end else if (invalidate_r) begin
                         req_state_n = PS_INVALIDATED_WAIT_RESPONSE;
                     end
                 end
@@ -202,7 +202,7 @@ module l1_tlb_request_engine
                     end
                 end
                 PS_INVALIDATED_WAIT_RESPONSE: begin
-                    if (rsp_valid_q) begin
+                    if (rsp_valid_r) begin
                         req_state_n = PS_IDLE;
                     end
                 end
@@ -231,12 +231,12 @@ module l1_tlb_request_engine
         if (rst_i) begin
             req_state     <= PS_IDLE;
             fault_pending <= '0;
-            port_idx_q    <= '0;
+            port_idx_r    <= '0;
         end else begin
             req_state     <= req_state_n;
             fault_pending <= fault_pending_n;
             if (req_state == PS_GET_MISS) begin
-                port_idx_q <= grant_index;
+                port_idx_r <= grant_index;
             end
         end
     end
@@ -244,11 +244,11 @@ module l1_tlb_request_engine
     // Latch the in-flight key when the walk fires.
     always_ff @(posedge clk_i) begin
         if (rst_i) begin
-            inflight_vpn_q  <= '0;
-            inflight_asid_q <= '0;
+            inflight_vpn_r  <= '0;
+            inflight_asid_r <= '0;
         end else if (req_fire) begin
-            inflight_vpn_q  <= l2_req.vpn;
-            inflight_asid_q <= l2_req.asid;
+            inflight_vpn_r  <= l2_req.vpn;
+            inflight_asid_r <= l2_req.asid;
         end
     end
 
@@ -257,9 +257,9 @@ module l1_tlb_request_engine
 
     // Fill (success response only).
     assign fill_valid_o    = write_tlb;
-    assign fill_entry_o    = rsp_data_q.tlb_entry;
-    assign fill_vpn_o      = inflight_vpn_q;
-    assign fill_asid_o     = inflight_asid_q;
+    assign fill_entry_o    = rsp_data_r.tlb_entry;
+    assign fill_vpn_o      = inflight_vpn_r;
+    assign fill_asid_o     = inflight_asid_r;
 
 endmodule
 

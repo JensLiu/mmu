@@ -33,8 +33,8 @@ module l2_tlb_frontend #(
     input logic rst_i,  // System reset signal (active low).
 
     // L1-L2 TLB interface (one fire-once link per L1)
-    inter_tlb_if.slave l1_l2_if[NUM_REQS],
-    ptw_if.master      ptw_if  [NUM_PTWS]
+    inter_tlb_if.slave in_if[NUM_REQS],
+    inter_tlb_if.master out_if[NUM_PTWS]
 );
 
 
@@ -59,18 +59,18 @@ module l2_tlb_frontend #(
     logic [NUM_REQS-1:0][     RSP_W-1:0] src_rsp_data;
 
     for (genvar i = 0; i < NUM_REQS; ++i) begin : g_src
-        assign src_req_valid[i]           = l1_l2_if[i].req_valid;
-        assign src_req_data[i]            = l1_l2_if[i].req_data;
-        assign src_bank_sel[i]            = bank_sel(l1_l2_if[i].req_data.vpn);
-        assign l1_l2_if[i].req_ready      = src_req_ready[i];
+        assign src_req_valid[i]           = in_if[i].req_valid;
+        assign src_req_data[i]            = in_if[i].req_data;
+        assign src_bank_sel[i]            = bank_sel(in_if[i].req_data.vpn);
+        assign in_if[i].req_ready      = src_req_ready[i];
 
-        assign l1_l2_if[i].rsp_valid      = src_rsp_valid[i];
-        assign l1_l2_if[i].rsp_data       = mmu_pkg::inter_tlb_rsp_data_t'(src_rsp_data[i]);
-        assign src_rsp_ready[i]           = l1_l2_if[i].rsp_ready;
+        assign in_if[i].rsp_valid      = src_rsp_valid[i];
+        assign in_if[i].rsp_data       = mmu_pkg::inter_tlb_rsp_data_t'(src_rsp_data[i]);
+        assign src_rsp_ready[i]           = in_if[i].rsp_ready;
 
         // Broadcast flush to every L1 (not request-matched). All PTWs carry the
         // same CSR flush, so any one of them is representative.
-        assign l1_l2_if[i].invalidate_tlb = ptw_if[0].invalidate_tlb;
+        assign in_if[i].invalidate_tlb = out_if[0].invalidate_tlb;
     end
 
     // -------------------------------------------------------------------------
@@ -109,7 +109,7 @@ module l2_tlb_frontend #(
     logic [NUM_BANKS-1:0][    RSP_W-1:0] bank_rsp_data;
     logic [NUM_BANKS-1:0][SRC_SEL_W-1:0] bank_rsp_src;  // threaded src id -> rsp sel_in
 
-    ptw_if bank_ptw[NUM_BANKS] ();
+    inter_tlb_if #(.TAG_T(mmu_pkg::ptw_tag_t)) bank_out_if[NUM_BANKS] ();
 
     for (genvar b = 0; b < NUM_BANKS; ++b) begin : g_banks
         mmu_pkg::inter_tlb_rsp_data_t bank_rsp_struct;
@@ -128,7 +128,7 @@ module l2_tlb_frontend #(
             .rsp_ready_i(bank_rsp_ready[b]),
             .rsp_data_o (bank_rsp_struct),
             .rsp_src_o  (bank_rsp_src[b]),
-            .ptw_if     (bank_ptw[b])
+            .out_if   (bank_out_if[b])
         );
 
         assign bank_rsp_data[b] = bank_rsp_struct;
@@ -140,8 +140,8 @@ module l2_tlb_frontend #(
     ) ptw_scheduler (
         .clk_i    (clk_i),
         .rst_i    (rst_i),
-        .bank_reqs(bank_ptw),
-        .ptw_reqs (ptw_if)
+        .bank_reqs(bank_out_if),
+        .ptw_reqs (out_if)
     );
 
     // -------------------------------------------------------------------------

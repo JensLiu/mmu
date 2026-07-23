@@ -31,7 +31,7 @@ module ptw #(
     input logic clk_i,
     input logic rst_i,
 
-    ptw_if.slave      ptw_if,
+    inter_tlb_if.slave      tlb_if,
     ptw_mem_if.master mem_if,
 
     /* verilator lint_off UNUSEDSIGNAL */
@@ -60,7 +60,8 @@ module ptw #(
     logic [LEVEL_CNT_WIDTH-1:0] count_r, count_n;  // current walk level (0 = root)
     wire not_last_level = (count_r < LEVEL_CNT_WIDTH'(LEVELS - 1));
 
-    mmu_pkg::ptw_req_data_t req_r;
+    mmu_pkg::inter_tlb_req_data_t req_data_r;
+    mmu_pkg::ptw_tag_t            req_tag_r;
     mmu_pkg::pte_t pte_r;
     mmu_pkg::pte_t mem_pte;
 
@@ -76,7 +77,7 @@ module ptw #(
     logic [PAGE_LVL_BITS-1:0] vpn_per_lvl[LEVELS-1:0];
     for (genvar lvl = 0; lvl < LEVELS; lvl++) begin : g_vpn_per_lvl
         logic [VPN_WIDTH-1:0] vpn_shifted;
-        assign vpn_shifted      = (req_r.vpn >> ((LEVELS - lvl - 1) * PAGE_LVL_BITS));
+        assign vpn_shifted      = (req_data_r.vpn >> ((LEVELS - lvl - 1) * PAGE_LVL_BITS));
         assign vpn_per_lvl[lvl] = vpn_shifted[PAGE_LVL_BITS-1:0];
     end
     wire [PAGE_LVL_BITS-1:0] vpn_lvl = vpn_per_lvl[count_r];
@@ -132,7 +133,7 @@ module ptw #(
 
     // A non-writable leaf skips the write
     // TLB permission check should raise the store fault from the returned perms
-    wire do_dirty_write = req_r.set_dirty && is_pte_leaf && mem_pte.w && !mem_pte.d;
+    wire do_dirty_write = req_data_r.set_dirty && is_pte_leaf && mem_pte.w && !mem_pte.d;
 
     // -------------------------------------------------------------------------
     // PTE address for the current level: (walk_ppn << 12) + (vpn_lvl << log2(PTE))
@@ -149,7 +150,8 @@ module ptw #(
     // -------------------------------------------------------------------------
     always_ff @(posedge clk_i) begin
         if (rst_i) begin
-            req_r      <= '0;
+            req_data_r      <= '0;
+            req_tag_r       <= 0;
             pte_r      <= '0;
             pte_addr_r <= '0;
         end else if ((current_state == S_WAIT) && mem_rsp_valid) begin
@@ -159,8 +161,9 @@ module ptw #(
             pte_addr_r <= pte_addr;  // the PTE's own address, for the dirty write-back
         end else if ((current_state == S_REQ) && pwc_hit && not_last_level) begin
             pte_r.ppn <= pwc_data;  // PWC supplied the next pointer
-        end else if (ptw_ready && ptw_if.req_valid) begin
-            req_r     <= ptw_if.req_data;  // new walk: seed from SATP
+        end else if (ptw_ready && tlb_if.req_valid) begin
+            req_data_r     <= tlb_if.req_data;  // new walk: seed from SATP
+            req_tag_r      <= tlb_if.req_tag;
             pte_r.ppn <= csr_ptw_comm_i.satp[PPN_WIDTH-1:0];
         end
     end
@@ -236,28 +239,27 @@ module ptw #(
             assign rsp_ppn_per_lvl[j] = leaf_ppn_base[PPN_WIDTH-1:0];
         end else begin : g_super
             assign rsp_ppn_per_lvl[j] = {
-                leaf_ppn_base[PPN_WIDTH-1 : SUPER_BITS], req_r.vpn[SUPER_BITS-1 : 0]
+                leaf_ppn_base[PPN_WIDTH-1 : SUPER_BITS], req_data_r.vpn[SUPER_BITS-1 : 0]
             };
         end
     end
     wire [PPN_WIDTH-1:0] rsp_ppn = rsp_ppn_per_lvl[count_r];
 
-    assign ptw_if.rsp_valid        = rsp_valid;
-    assign ptw_if.rsp_data.error   = rsp_error;
-    assign ptw_if.rsp_data.level   = count_r;
-    assign ptw_if.rsp_data.pte.ppn = rsp_ppn;
-    assign ptw_if.rsp_data.pte.rfs = pte_r.rfs;
-    assign ptw_if.rsp_data.pte.d   = pte_r.d | do_dirty_write;
-    assign ptw_if.rsp_data.pte.a   = pte_r.a;
-    assign ptw_if.rsp_data.pte.g   = pte_r.g;
-    assign ptw_if.rsp_data.pte.u   = pte_r.u;
-    assign ptw_if.rsp_data.pte.x   = pte_r.x;
-    assign ptw_if.rsp_data.pte.w   = pte_r.w;
-    assign ptw_if.rsp_data.pte.r   = pte_r.r;
-    assign ptw_if.rsp_data.pte.v   = pte_r.v;
-    assign ptw_if.rsp_data.tag     = req_r.tag;
-    assign ptw_if.req_ready        = ptw_ready;
-    assign ptw_if.invalidate_tlb   = csr_ptw_comm_i.flush;
+    assign tlb_if.rsp_valid        = rsp_valid;
+    always_comb begin : g_rsp
+        mmu_pkg::pte_t pte;
+        pte = pte_r;
+        pte.d |= do_dirty_write;
+        tlb_if.rsp_data.tlb_entry = mmu_pkg::tlb_entry_from_pte(
+            req_data_r.vpn,
+            req_data_r.asid,
+            pte, count_r /* level */, rsp_error
+        );
+        tlb_if.rsp_data.error = rsp_error;
+        tlb_if.rsp_tag = req_tag_r;
+        tlb_if.req_ready        = ptw_ready;
+        tlb_if.invalidate_tlb   = csr_ptw_comm_i.flush;
+    end
 
     // -------------------------------------------------------------------------
     // FSM
@@ -279,7 +281,7 @@ module ptw #(
         case (current_state)
             S_READY: begin
                 count_n = '0;
-                if (ptw_if.req_valid) next_state = S_REQ;
+                if (tlb_if.req_valid) next_state = S_REQ;
             end
             S_REQ: begin
                 if (pwc_skip) begin
@@ -309,8 +311,8 @@ module ptw #(
                 mem_if.req_valid = 1'b1;
                 if (mem_req_ready) next_state = S_DONE;
             end
-            S_DONE:  next_state = ptw_if.rsp_ready ? S_READY : S_DONE;  // hold until accepted
-            S_ERROR: next_state = ptw_if.rsp_ready ? S_READY : S_ERROR;
+            S_DONE:  next_state = tlb_if.rsp_ready ? S_READY : S_DONE;  // hold until accepted
+            S_ERROR: next_state = tlb_if.rsp_ready ? S_READY : S_ERROR;
             default: next_state = S_READY;
         endcase
     end
