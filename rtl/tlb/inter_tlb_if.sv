@@ -18,38 +18,54 @@
  * under the License.
  */
 
-interface inter_tlb_if;
+interface inter_tlb_if #(
+  parameter type TAG_T
+);
 
-    logic                         req_valid, req_ready;
+    logic req_valid, req_ready;
     mmu_pkg::inter_tlb_req_data_t req_data;
+    /* verilator lint_off UNUSEDSIGNAL */
+    /* verilator lint_off UNDRIVEN */
+    TAG_T req_tag;
+    /* verilator lint_on UNUSEDSIGNAL */
+    /* verilator lint_on UNDRIVEN */
 
-    logic                         rsp_valid, rsp_ready;
+    logic rsp_valid, rsp_ready;
     mmu_pkg::inter_tlb_rsp_data_t rsp_data;
+    /* verilator lint_off UNUSEDSIGNAL */
+    /* verilator lint_off UNDRIVEN */
+    TAG_T rsp_tag;
+    /* verilator lint_on UNUSEDSIGNAL */
+    /* verilator lint_off UNDRIVEN */
 
     // Broadcast flush from L2 -> L1. NOT request-matched: it is driven to every
     // L1 identically and must not ride the response channel.
     logic invalidate_tlb;
 
-    modport master (
+    modport master(
         output req_valid,
         output req_data,
-        input  req_ready,
+        output req_tag,
+        input req_ready,
 
-        input  rsp_valid,
-        input  rsp_data,
+        input rsp_valid,
+        input rsp_data,
+        input rsp_tag,
         output rsp_ready,
 
-        input  invalidate_tlb
+        input invalidate_tlb
     );
 
-    modport slave (
-        input  req_valid,
-        input  req_data,
+    modport slave(
+        input req_valid,
+        input req_data,
+        input req_tag,
         output req_ready,
 
         output rsp_valid,
         output rsp_data,
-        input  rsp_ready,
+        output rsp_tag,
+        input rsp_ready,
 
         output invalidate_tlb
     );

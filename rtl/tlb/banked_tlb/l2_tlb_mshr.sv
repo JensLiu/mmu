@@ -22,6 +22,7 @@ module l2_tlb_mshr #(
     parameter  int unsigned MSHR_SIZE    = 4,
     parameter  int unsigned NUM_CORES    = 32,
     localparam int unsigned VPN_WIDTH    = mmu_pkg::VPN_WIDTH,
+    localparam int unsigned PPN_WIDTH    = mmu_pkg::PPN_WIDTH,
     localparam int unsigned ASID_WIDTH   = mmu_pkg::ASID_WIDTH,
     localparam int unsigned LEVEL_BITS   = mmu_pkg::LEVEL_BITS,
     localparam int unsigned TAG_W        = (MSHR_SIZE > 1) ? $clog2(MSHR_SIZE) : 1,
@@ -49,20 +50,16 @@ module l2_tlb_mshr #(
     // Fill (slave)
     input  logic                           fill_valid_i,
     output logic                           fill_ready_o,
-    input  logic          [     TAG_W-1:0] fill_id_i,
-    input  mmu_pkg::pte_t                  fill_pte_i,
-    input  logic          [LEVEL_BITS-1:0] fill_level_i,
     input  logic                           fill_error_i,
+    input  logic          [     TAG_W-1:0] fill_id_i,
+    input  mmu_pkg::tlb_entry_t            fill_tlb_entry_i,
 
     // Deliver (master)
     output logic                           deliver_valid_o,
     input  logic                           deliver_ready_i,
     output logic          [ NUM_CORES-1:0] deliver_cores_o,
-    output mmu_pkg::pte_t                  deliver_pte_o,
-    output logic          [LEVEL_BITS-1:0] deliver_level_o,
+    output mmu_pkg::tlb_entry_t            deliver_tlb_entry_o,
     output logic                           deliver_error_o,
-    output logic          [ VPN_WIDTH-1:0] deliver_vpn_o,
-    output logic          [ASID_WIDTH-1:0] deliver_asid_o,
     output logic                           deliver_write_cache_o
 );
 
@@ -87,15 +84,34 @@ module l2_tlb_mshr #(
         logic                  dirty_poison;
         logic [NUM_CORES-1:0]  pending_cores;  // delivered this pass
         logic [NUM_CORES-1:0]  dirty_cores;    // held stores, become the next pass
-        mmu_pkg::pte_t         pte;
-        logic [LEVEL_BITS-1:0] level;
-        logic                  error;
+        // TLB fields from response (fill)
+        logic [PPN_WIDTH-1:0]   fill_ppn;
+        logic [LEVEL_BITS-1:0]  fill_level;
+        logic                   fill_access;
+        logic                   fill_dirty;
+        mmu_pkg::tlb_entry_permissions_t fill_perms;
+        logic                   error;
     } mshr_entry_t;
+
+    /* verilator lint_off UNUSEDSIGNAL */
+    function automatic mmu_pkg::tlb_entry_t tlb_entry_from_mshr (
+        input mshr_entry_t mshr_entry
+    );
+        tlb_entry_from_mshr.vpn = mshr_entry.vpn;
+        tlb_entry_from_mshr.asid = mshr_entry.asid;
+        tlb_entry_from_mshr.ppn = mshr_entry.fill_ppn;
+        tlb_entry_from_mshr.level = mshr_entry.fill_level;
+        tlb_entry_from_mshr.access = mshr_entry.fill_access;
+        tlb_entry_from_mshr.dirty = mshr_entry.fill_dirty;
+        tlb_entry_from_mshr.perms = mshr_entry.fill_perms;
+        tlb_entry_from_mshr.valid = !mshr_entry.error; // TODO: redundant field
+    endfunction
+    /* verilator lint_on UNUSEDSIGNAL */
 
     mshr_entry_t [MSHR_SIZE-1:0] mshr_entries;
 
     // -------------------------------------------------------------------------
-    // Deliver select
+    // Deliver select (computed first: allocate.ready depends on deliver_fire)
     // -------------------------------------------------------------------------
     logic        [MSHR_SIZE-1:0] deliver_pending;
     for (genvar i = 0; i < MSHR_SIZE; i++) begin : g_deliver_pending
@@ -120,11 +136,8 @@ module l2_tlb_mshr #(
 
     assign deliver_valid_o       = deliver_some;
     assign deliver_cores_o       = mshr_entries[deliver_id].pending_cores;
-    assign deliver_pte_o         = mshr_entries[deliver_id].pte;
-    assign deliver_level_o       = mshr_entries[deliver_id].level;
-    assign deliver_error_o       = mshr_entries[deliver_id].error;
-    assign deliver_vpn_o         = mshr_entries[deliver_id].vpn;
-    assign deliver_asid_o        = mshr_entries[deliver_id].asid;
+    assign deliver_tlb_entry_o   = tlb_entry_from_mshr(mshr_entries[deliver_id]);
+    assign deliver_error_o       = mshr_entries[deliver_id].error;  // TODO:redundant`!tlb_entry.valid`
     assign deliver_write_cache_o = deliver_terminal && !mshr_entries[deliver_id].error;
 
     wire                  deliver_fire = deliver_valid_o && deliver_ready_i;
@@ -277,13 +290,19 @@ module l2_tlb_mshr #(
 
             // Fill: capture the walk result
             if (fill_fire) begin
-                mshr_entries[fill_id_i].pte   <= fill_pte_i;
-                mshr_entries[fill_id_i].level <= fill_level_i;
+                assert (mshr_entries[fill_id_i].vpn == fill_tlb_entry_i.vpn);
+                assert (mshr_entries[fill_id_i].asid == fill_tlb_entry_i.asid);
+                assert (fill_tlb_entry_i.valid == !fill_error_i);
+                mshr_entries[fill_id_i].fill_ppn   <= fill_tlb_entry_i.ppn;
+                mshr_entries[fill_id_i].fill_level   <= fill_tlb_entry_i.level;
+                mshr_entries[fill_id_i].fill_access   <= fill_tlb_entry_i.access;
+                mshr_entries[fill_id_i].fill_dirty   <= fill_tlb_entry_i.dirty;
+                mshr_entries[fill_id_i].fill_perms   <= fill_tlb_entry_i.perms;
+                mshr_entries[fill_id_i].error   <= fill_error_i;
                 // assert (!fill_error_i);
                 // if (fill_error_i) begin
                 //     $finish;
                 // end
-                mshr_entries[fill_id_i].error <= fill_error_i;
                 if (mshr_entries[fill_id_i].state == ES_CLEAN_PENDING_FILL) begin
                     mshr_entries[fill_id_i].state <= ES_CLEAN_PENDING_DELIVER;
                 end else begin

@@ -37,8 +37,8 @@ module mmu #(
 
     localparam int unsigned NUM_PTWS = 1;
 
-    ptw_if ptw_link[NUM_PTWS] ();
-    inter_tlb_if l1_l2_links[2 * NUM_CORES] ();
+    inter_tlb_if #(.TAG_T(logic)) l1_l2_links[2 * NUM_CORES] ();
+    inter_tlb_if #(.TAG_T(mmu_pkg::ptw_tag_t)) l2_ptw_links[NUM_PTWS] ();
 
     for (genvar i = 0; i < NUM_CORES; ++i) begin : g_l1_tlbs
         // L1 TLBs: Fully-associative, small size, multiport CAM could be feasible
@@ -73,8 +73,8 @@ module mmu #(
     ) l2_tlb_frontend_inst (
         .clk_i   (clk_i),
         .rst_i   (rst_i),
-        .l1_l2_if(l1_l2_links),
-        .ptw_if  (ptw_link)
+        .in_if (l1_l2_links),
+        .out_if  (l2_ptw_links)
     );
 
 
@@ -84,7 +84,7 @@ module mmu #(
     ) ptw_inst (
         .clk_i         (clk_i),
         .rst_i         (rst_i),
-        .ptw_if        (ptw_link[0]),
+        .tlb_if        (l2_ptw_links[0]),
         .mem_if        (ptw_mem_if),
         .csr_ptw_comm_i(csr_ptw_comm_i)
     );

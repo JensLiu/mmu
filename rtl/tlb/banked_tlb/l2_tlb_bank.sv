@@ -24,9 +24,6 @@ module l2_tlb_bank #(
     parameter int unsigned NUM_TLB_SETS = 128,
     parameter int unsigned NUM_TLB_WAYS = 8,
     parameter int unsigned MSHR_SIZE = 4,
-    localparam int unsigned VPN_WIDTH = mmu_pkg::VPN_WIDTH,
-    localparam int unsigned ASID_WIDTH = mmu_pkg::ASID_WIDTH,
-    localparam int unsigned LEVEL_BITS = mmu_pkg::LEVEL_BITS,
     localparam int unsigned PTW_TAG_SLOT_WIDTH = mmu_pkg::PTW_TAG_SLOT_WIDTH,
     localparam int unsigned MSHR_TAG_WIDTH = (MSHR_SIZE > 1) ? $clog2(MSHR_SIZE) : 1
 ) (
@@ -47,33 +44,9 @@ module l2_tlb_bank #(
     output mmu_pkg::inter_tlb_rsp_data_t             rsp_data_o,
     output logic                         [SRC_W-1:0] rsp_src_o,
 
-    // PTW (master)
-    ptw_if.master ptw_if
+    // lower-level TLB/PTW (master)
+    inter_tlb_if.master out_if
 );
-
-
-    // -------------------------------------------------------------------------
-    // pte_t -> payload / cache entry helpers
-    // -------------------------------------------------------------------------
-    /* verilator lint_off UNUSEDSIGNAL */
-    function automatic mmu_pkg::tlb_entry_t entry_from_pte(
-        input logic [VPN_WIDTH-1:0] vpn, input logic [ASID_WIDTH-1:0] asid,
-        input mmu_pkg::pte_t pte, input logic [LEVEL_BITS-1:0] level, input logic error);
-        entry_from_pte.vpn      = vpn;
-        entry_from_pte.asid     = asid;
-        entry_from_pte.ppn      = pte.ppn;
-        entry_from_pte.level    = LEVEL_BITS'(level);
-        entry_from_pte.dirty    = pte.d;
-        entry_from_pte.access   = pte.a;
-        entry_from_pte.perms.ur = pte.r & pte.u & pte.v;
-        entry_from_pte.perms.uw = pte.w & pte.u & pte.v;
-        entry_from_pte.perms.ux = pte.x & pte.u & pte.v;
-        entry_from_pte.perms.sr = pte.r & ~pte.u & pte.v;
-        entry_from_pte.perms.sw = pte.w & ~pte.u & pte.v;
-        entry_from_pte.perms.sx = pte.x & ~pte.u & pte.v;
-        entry_from_pte.valid    = !error;
-    endfunction
-    /* verilator lint_on UNUSEDSIGNAL */
 
     // -------------------------------------------------------------------------
     // Store
@@ -109,7 +82,7 @@ module l2_tlb_bank #(
         .write_asid_i (deliver_entry.asid),
         .write_entry_i(deliver_entry),
         // Clear (slave): flush-all on a TLB Invalidate broadcast.
-        .clear_valid_i(ptw_if.invalidate_tlb),
+        .clear_valid_i(out_if.invalidate_tlb),
         .clear_ready_o(tlb_clear_ready)
     );
 
@@ -141,11 +114,8 @@ module l2_tlb_bank #(
     logic                           deliver_valid;
     logic                           deliver_ready;
     logic          [  NUM_SRCS-1:0] deliver_cores;
-    mmu_pkg::pte_t                  deliver_pte;
-    logic          [LEVEL_BITS-1:0] deliver_level;
+    mmu_pkg::tlb_entry_t            deliver_entry;
     logic                           deliver_error;
-    logic          [ VPN_WIDTH-1:0] deliver_vpn;
-    logic          [ASID_WIDTH-1:0] deliver_asid;
     logic                           deliver_write_cache;
     wire                            deliver_fire = deliver_valid && deliver_ready;
     wire                            alloc_valid = req_valid_i && !read_effective_hit;
@@ -164,45 +134,37 @@ module l2_tlb_bank #(
         .allocate_set_dirty_i (req_data_i.set_dirty),
         .allocate_core_id_i   (req_src_i),
         // PTW Issue (master)
-        .issue_valid_o        (ptw_if.req_valid),
-        .issue_ready_i        (ptw_if.req_ready),
-        .issue_id_o           (ptw_if.req_data.tag.mshr_slot[MSHR_TAG_WIDTH-1:0]),
-        .issue_vpn_o          (ptw_if.req_data.vpn),
-        .issue_asid_o         (ptw_if.req_data.asid),
-        .issue_set_dirty_o    (ptw_if.req_data.set_dirty),
+        .issue_valid_o        (out_if.req_valid),
+        .issue_ready_i        (out_if.req_ready),
+        .issue_id_o           (out_if.req_tag.mshr_slot[MSHR_TAG_WIDTH-1:0]),
+        .issue_vpn_o          (out_if.req_data.vpn),
+        .issue_asid_o         (out_if.req_data.asid),
+        .issue_set_dirty_o    (out_if.req_data.set_dirty),
         // PTW Fill (slave)
-        .fill_valid_i         (ptw_if.rsp_valid),
-        .fill_ready_o         (ptw_if.rsp_ready),
-        .fill_id_i            (MSHR_TAG_WIDTH'(ptw_if.rsp_data.tag.mshr_slot)),
-        .fill_pte_i           (ptw_if.rsp_data.pte),
-        .fill_level_i         (ptw_if.rsp_data.level),
-        .fill_error_i         (ptw_if.rsp_data.error),
+        .fill_valid_i         (out_if.rsp_valid),
+        .fill_ready_o         (out_if.rsp_ready),
+        .fill_error_i         (out_if.rsp_data.error),
+        .fill_id_i            (MSHR_TAG_WIDTH'(out_if.rsp_tag.mshr_slot)),
+        .fill_tlb_entry_i     (out_if.rsp_data.tlb_entry),
         // Deliver (master)
         .deliver_valid_o      (deliver_valid),
         .deliver_ready_i      (deliver_ready),
         .deliver_cores_o      (deliver_cores),
-        .deliver_pte_o        (deliver_pte),
-        .deliver_level_o      (deliver_level),
+        .deliver_tlb_entry_o  (deliver_entry),
         .deliver_error_o      (deliver_error),
-        .deliver_vpn_o        (deliver_vpn),
-        .deliver_asid_o       (deliver_asid),
         .deliver_write_cache_o(deliver_write_cache)
     );
 
-    assign ptw_if.req_data.tag.bank = '0;  // Filled later by the scheduler
+    assign out_if.req_tag.bank = '0;  // Filled later by the scheduler
     if (PTW_TAG_SLOT_WIDTH > MSHR_TAG_WIDTH) begin : g_slot_hi
         // zero out the unused high slot bits if the MSHR is smaller than the slot field.
-        assign ptw_if.req_data.tag.mshr_slot[PTW_TAG_SLOT_WIDTH-1:MSHR_TAG_WIDTH] = '0;
+        assign out_if.req_tag.mshr_slot[PTW_TAG_SLOT_WIDTH-1:MSHR_TAG_WIDTH] = '0;
     end
 
     // -------------------------------------------------------------------------
     // Response engine
     // -------------------------------------------------------------------------
     // Entry for current TLB update
-    mmu_pkg::tlb_entry_t deliver_entry;
-    assign deliver_entry = entry_from_pte(
-        deliver_vpn, deliver_asid, deliver_pte, deliver_level, deliver_level
-    );
     mmu_pkg::inter_tlb_rsp_data_t deliver_rsp, hit_rsp;
     always_comb begin
         deliver_rsp.tlb_entry = deliver_entry;

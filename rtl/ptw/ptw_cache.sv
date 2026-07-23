@@ -22,8 +22,8 @@ module ptw_cache
     import mmu_pkg::*;
 #(
     parameter int unsigned NUM_ENTRIES = mmu_pkg::PTW_CACHE_SIZE,
-    parameter int unsigned TAG_WIDTH = mmu_pkg::PADDR_WIDTH,  // tags are PTE physical addresses
-    parameter int unsigned DATA_WIDTH = mmu_pkg::PPN_WIDTH
+    parameter int unsigned TAG_WIDTH   = mmu_pkg::PADDR_WIDTH,  // tags are PTE physical addresses
+    parameter int unsigned DATA_WIDTH  = mmu_pkg::PPN_WIDTH
 ) (
     input logic clk_i,
     input logic rst_i,
