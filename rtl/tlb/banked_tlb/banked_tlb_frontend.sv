@@ -19,12 +19,15 @@
  */
 
 
-module l2_tlb_frontend #(
-    parameter  int unsigned NUM_REQS   = 1,
+module banked_tlb_frontend #(
+    parameter  int unsigned NUM_IN_REQS   = 1,
+    parameter  int unsigned NUM_OUT_REQS   = 1,
     parameter  int unsigned NUM_BANKS  = 1,
-    parameter  int unsigned NUM_PTWS   = 1,
+    parameter  int unsigned MSHR_ENTRIES = 8,
+    parameter  int unsigned NUM_TLB_SETS = 128,
+    parameter  int unsigned NUM_TLB_WAYS = 8,
     localparam int unsigned VPN_WIDTH  = mmu_pkg::VPN_WIDTH,
-    localparam int unsigned SRC_SEL_W  = (NUM_REQS > 1) ? $clog2(NUM_REQS) : 1,
+    localparam int unsigned SRC_SEL_W  = (NUM_IN_REQS > 1) ? $clog2(NUM_IN_REQS) : 1,
     localparam int unsigned BANK_SEL_W = (NUM_BANKS > 1) ? $clog2(NUM_BANKS) : 1,
     localparam int unsigned REQ_W      = $bits(mmu_pkg::inter_tlb_req_data_t),
     localparam int unsigned RSP_W      = $bits(mmu_pkg::inter_tlb_rsp_data_t)
@@ -33,8 +36,8 @@ module l2_tlb_frontend #(
     input logic rst_i,
 
     // L1-L2 TLB interface (one fire-once link per L1)
-    inter_tlb_if.slave in_if[NUM_REQS],
-    inter_tlb_if.master out_if[NUM_PTWS]
+    inter_tlb_if.slave in_if[NUM_IN_REQS],
+    inter_tlb_if.master out_if[NUM_OUT_REQS]
 );
 
 
@@ -49,16 +52,16 @@ module l2_tlb_frontend #(
     // -------------------------------------------------------------------------
     // Source-side packing (interface -> flat buses)
     // -------------------------------------------------------------------------
-    logic [NUM_REQS-1:0]                 src_req_valid;
-    logic [NUM_REQS-1:0]                 src_req_ready;
-    logic [NUM_REQS-1:0][     REQ_W-1:0] src_req_data;
-    logic [NUM_REQS-1:0][BANK_SEL_W-1:0] src_bank_sel;
+    logic [NUM_IN_REQS-1:0]                 src_req_valid;
+    logic [NUM_IN_REQS-1:0]                 src_req_ready;
+    logic [NUM_IN_REQS-1:0][     REQ_W-1:0] src_req_data;
+    logic [NUM_IN_REQS-1:0][BANK_SEL_W-1:0] src_bank_sel;
 
-    logic [NUM_REQS-1:0]                 src_rsp_valid;
-    logic [NUM_REQS-1:0]                 src_rsp_ready;
-    logic [NUM_REQS-1:0][     RSP_W-1:0] src_rsp_data;
+    logic [NUM_IN_REQS-1:0]                 src_rsp_valid;
+    logic [NUM_IN_REQS-1:0]                 src_rsp_ready;
+    logic [NUM_IN_REQS-1:0][     RSP_W-1:0] src_rsp_data;
 
-    for (genvar i = 0; i < NUM_REQS; ++i) begin : g_src
+    for (genvar i = 0; i < NUM_IN_REQS; ++i) begin : g_src
         assign src_req_valid[i]           = in_if[i].req_valid;
         assign src_req_data[i]            = in_if[i].req_data;
         assign src_bank_sel[i]            = bank_sel(in_if[i].req_data.vpn);
@@ -82,7 +85,7 @@ module l2_tlb_frontend #(
     logic [NUM_BANKS-1:0][SRC_SEL_W-1:0] bank_src_id;  // sel_out: which L1 each bank serves
 
     VX_stream_xbar #(
-        .NUM_INPUTS (NUM_REQS),
+        .NUM_INPUTS (NUM_IN_REQS),
         .NUM_OUTPUTS(NUM_BANKS),
         .DATAW      (REQ_W),
         .ARBITER    ("R"),
@@ -114,9 +117,12 @@ module l2_tlb_frontend #(
     for (genvar b = 0; b < NUM_BANKS; ++b) begin : g_banks
         mmu_pkg::inter_tlb_rsp_data_t bank_rsp_struct;
 
-        l2_tlb_bank #(
+        tlb_bank #(
             .SRC_W   (SRC_SEL_W),
-            .NUM_SRCS(NUM_REQS)
+            .NUM_SRCS(NUM_IN_REQS),
+            .MSHR_ENTRIES(MSHR_ENTRIES),
+            .NUM_TLB_SETS(NUM_TLB_SETS),
+            .NUM_TLB_WAYS(NUM_TLB_WAYS)
         ) tlb_bank (
             .clk_i      (clk_i),
             .rst_i      (rst_i),
@@ -134,14 +140,14 @@ module l2_tlb_frontend #(
         assign bank_rsp_data[b] = bank_rsp_struct;
     end
 
-    ptw_scheduler #(
-        .NUM_BANKS(NUM_BANKS),
-        .NUM_PTWS (NUM_PTWS)
-    ) ptw_scheduler (
+    tlb_req_scheduler #(
+        .NUM_PRODUCERS(NUM_BANKS),
+        .NUM_CONSUMERS(NUM_OUT_REQS)
+    ) req_scheduler (
         .clk_i    (clk_i),
         .rst_i    (rst_i),
-        .bank_reqs(bank_out_if),
-        .ptw_reqs (out_if)
+        .prod_if(bank_out_if),
+        .cons_if (out_if)
     );
 
     // -------------------------------------------------------------------------
@@ -149,7 +155,7 @@ module l2_tlb_frontend #(
     // -------------------------------------------------------------------------
     VX_stream_xbar #(
         .NUM_INPUTS (NUM_BANKS),
-        .NUM_OUTPUTS(NUM_REQS),
+        .NUM_OUTPUTS(NUM_IN_REQS),
         .DATAW      (RSP_W),
         .ARBITER    ("R"),
         .OUT_BUF    (2)

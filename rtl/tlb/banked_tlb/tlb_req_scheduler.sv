@@ -18,63 +18,63 @@
  * under the License.
  */
 
-module ptw_scheduler #(
-    parameter  int unsigned NUM_BANKS          = 1,
-    parameter  int unsigned NUM_PTWS           = 1,
-    localparam int unsigned BANK_ID_WIDTH      = (NUM_BANKS > 1) ? $clog2(NUM_BANKS) : 1,
-    localparam int unsigned PTW_ID_WIDTH       = (NUM_PTWS > 1) ? $clog2(NUM_PTWS) : 1,
+module tlb_req_scheduler #(
+    parameter  int unsigned NUM_PRODUCERS          = 1,
+    parameter  int unsigned NUM_CONSUMERS           = 1,
+    localparam int unsigned BANK_ID_WIDTH      = (NUM_PRODUCERS > 1) ? $clog2(NUM_PRODUCERS) : 1,
+    localparam int unsigned PTW_ID_WIDTH       = (NUM_CONSUMERS > 1) ? $clog2(NUM_CONSUMERS) : 1,
     localparam int unsigned PTW_TAG_BANK_WIDTH = mmu_pkg::PTW_TAG_BANK_WIDTH
 ) (
     input logic clk_i,
     input logic rst_i,
 
-    inter_tlb_if.slave  bank_reqs[NUM_BANKS],
-    inter_tlb_if.master ptw_reqs [ NUM_PTWS]
+    inter_tlb_if.slave  prod_if[NUM_PRODUCERS],
+    inter_tlb_if.master cons_if [ NUM_CONSUMERS]
 );
 
     // -------------------------------------------------------------------------
     // Unpack the interface arrays into flat vectors (dynamic indexing needs this)
     // -------------------------------------------------------------------------
-    logic [NUM_BANKS-1:0] bank_req_valid, bank_req_ready;
-    mmu_pkg::inter_tlb_req_data_t [NUM_BANKS-1:0] bank_req_data;
-    mmu_pkg::ptw_tag_t [NUM_BANKS-1:0] bank_req_tags;
+    logic [NUM_PRODUCERS-1:0] bank_req_valid, bank_req_ready;
+    mmu_pkg::inter_tlb_req_data_t [NUM_PRODUCERS-1:0] bank_req_data;
+    mmu_pkg::ptw_tag_t [NUM_PRODUCERS-1:0] bank_req_tags;
 
-    logic [NUM_BANKS-1:0] bank_rsp_valid, bank_rsp_ready;
-    mmu_pkg::inter_tlb_rsp_data_t [NUM_BANKS-1:0] bank_rsp_data;
-    mmu_pkg::ptw_tag_t [NUM_BANKS-1:0] bank_rsp_tags;
+    logic [NUM_PRODUCERS-1:0] bank_rsp_valid, bank_rsp_ready;
+    mmu_pkg::inter_tlb_rsp_data_t [NUM_PRODUCERS-1:0] bank_rsp_data;
+    mmu_pkg::ptw_tag_t [NUM_PRODUCERS-1:0] bank_rsp_tags;
 
-    logic [NUM_PTWS-1:0] ptw_req_valid, ptw_req_ready;
-    mmu_pkg::inter_tlb_req_data_t [NUM_PTWS-1:0] ptw_req_data;
-    mmu_pkg::ptw_tag_t [NUM_PTWS-1:0] ptw_req_tags;
+    logic [NUM_CONSUMERS-1:0] ptw_req_valid, ptw_req_ready;
+    mmu_pkg::inter_tlb_req_data_t [NUM_CONSUMERS-1:0] ptw_req_data;
+    mmu_pkg::ptw_tag_t [NUM_CONSUMERS-1:0] ptw_req_tags;
 
-    logic [NUM_PTWS-1:0] ptw_rsp_valid, ptw_rsp_ready;
-    mmu_pkg::inter_tlb_rsp_data_t [NUM_PTWS-1:0] ptw_rsp_data;
-    mmu_pkg::ptw_tag_t [NUM_PTWS-1:0] ptw_rsp_tags;
+    logic [NUM_CONSUMERS-1:0] ptw_rsp_valid, ptw_rsp_ready;
+    mmu_pkg::inter_tlb_rsp_data_t [NUM_CONSUMERS-1:0] ptw_rsp_data;
+    mmu_pkg::ptw_tag_t [NUM_CONSUMERS-1:0] ptw_rsp_tags;
 
-    logic                   [NUM_PTWS-1:0] ptw_invalidate;
+    logic                   [NUM_CONSUMERS-1:0] ptw_invalidate;
 
-    for (genvar b = 0; b < NUM_BANKS; b++) begin : g_bank
-        assign bank_req_valid[b]           = bank_reqs[b].req_valid;
-        assign bank_req_data[b]            = bank_reqs[b].req_data;
-        assign bank_req_tags[b]            = bank_reqs[b].req_tag;
-        assign bank_reqs[b].req_ready      = bank_req_ready[b];
-        assign bank_reqs[b].rsp_valid      = bank_rsp_valid[b];
-        assign bank_reqs[b].rsp_data       = bank_rsp_data[b];
-        assign bank_reqs[b].rsp_tag        = bank_rsp_tags[b];
-        assign bank_rsp_ready[b]           = bank_reqs[b].rsp_ready;
-        assign bank_reqs[b].invalidate_tlb = |ptw_invalidate;  // broadcast CSR flush
+    for (genvar b = 0; b < NUM_PRODUCERS; b++) begin : g_bank
+        assign bank_req_valid[b]           = prod_if[b].req_valid;
+        assign bank_req_data[b]            = prod_if[b].req_data;
+        assign bank_req_tags[b]            = prod_if[b].req_tag;
+        assign prod_if[b].req_ready      = bank_req_ready[b];
+        assign prod_if[b].rsp_valid      = bank_rsp_valid[b];
+        assign prod_if[b].rsp_data       = bank_rsp_data[b];
+        assign prod_if[b].rsp_tag        = bank_rsp_tags[b];
+        assign bank_rsp_ready[b]           = prod_if[b].rsp_ready;
+        assign prod_if[b].invalidate_tlb = |ptw_invalidate;  // broadcast CSR flush
     end
 
-    for (genvar p = 0; p < NUM_PTWS; p++) begin : g_ptw
-        assign ptw_req_ready[p]      = ptw_reqs[p].req_ready;
-        assign ptw_reqs[p].req_valid = ptw_req_valid[p];
-        assign ptw_reqs[p].req_data  = ptw_req_data[p];
-        assign ptw_reqs[p].req_tag   = ptw_req_tags[p];
-        assign ptw_rsp_valid[p]      = ptw_reqs[p].rsp_valid;
-        assign ptw_rsp_data[p]       = ptw_reqs[p].rsp_data;
-        assign ptw_rsp_tags[p]       = ptw_reqs[p].rsp_tag;
-        assign ptw_reqs[p].rsp_ready = ptw_rsp_ready[p];
-        assign ptw_invalidate[p]     = ptw_reqs[p].invalidate_tlb;
+    for (genvar p = 0; p < NUM_CONSUMERS; p++) begin : g_ptw
+        assign ptw_req_ready[p]      = cons_if[p].req_ready;
+        assign cons_if[p].req_valid = ptw_req_valid[p];
+        assign cons_if[p].req_data  = ptw_req_data[p];
+        assign cons_if[p].req_tag   = ptw_req_tags[p];
+        assign ptw_rsp_valid[p]      = cons_if[p].rsp_valid;
+        assign ptw_rsp_data[p]       = cons_if[p].rsp_data;
+        assign ptw_rsp_tags[p]       = cons_if[p].rsp_tag;
+        assign cons_if[p].rsp_ready = ptw_rsp_ready[p];
+        assign ptw_invalidate[p]     = cons_if[p].invalidate_tlb;
     end
 
     // -------------------------------------------------------------------------
@@ -89,13 +89,13 @@ module ptw_scheduler #(
         sel_bank       = '0;
         sel_ptw_valid  = 1'b0;
         sel_ptw        = '0;
-        for (int i = 0; i < NUM_BANKS; i++) begin
+        for (int i = 0; i < NUM_PRODUCERS; i++) begin
             if (!sel_bank_valid && bank_req_valid[i]) begin
                 sel_bank_valid = 1'b1;
                 sel_bank       = BANK_ID_WIDTH'(i);
             end
         end
-        for (int j = 0; j < NUM_PTWS; j++) begin
+        for (int j = 0; j < NUM_CONSUMERS; j++) begin
             if (!sel_ptw_valid && ptw_req_ready[j]) begin
                 sel_ptw_valid = 1'b1;
                 sel_ptw       = PTW_ID_WIDTH'(j);
@@ -131,7 +131,7 @@ module ptw_scheduler #(
     always_comb begin
         rsp_valid = 1'b0;
         rsp_ptw   = '0;
-        for (int j = 0; j < NUM_PTWS; j++) begin
+        for (int j = 0; j < NUM_CONSUMERS; j++) begin
             if (!rsp_valid && ptw_rsp_valid[j]) begin
                 rsp_valid = 1'b1;
                 rsp_ptw   = PTW_ID_WIDTH'(j);
@@ -163,13 +163,13 @@ module ptw_scheduler #(
     always_ff @(posedge clk_i)
         if (rst_i) begin
             if (rsp_valid)
-                assert (int'(rsp_bank) < NUM_BANKS)
+                assert (int'(rsp_bank) < NUM_PRODUCERS)
                 else
                     $fatal(
                         1,
                         "ptw_scheduler: response tag names bank %0d (>= %0d)",
                         rsp_bank,
-                        NUM_BANKS
+                        NUM_PRODUCERS
                     );
         end
 `endif

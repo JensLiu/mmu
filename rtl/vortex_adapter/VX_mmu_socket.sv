@@ -1,6 +1,6 @@
 `include "VX_config.vh"
 
-module VX_mmu #(
+module VX_mmu_socket #(
     parameter int unsigned NUM_CORES             = 1,
     parameter int unsigned NUM_CHANNELS_PER_CORE = 1,
     // One dTLB port per translated data request (PTW requests are already physical).

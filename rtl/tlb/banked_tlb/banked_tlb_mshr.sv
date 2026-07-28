@@ -18,14 +18,14 @@
  * under the License.
  */
 
-module l2_tlb_mshr #(
-    parameter  int unsigned MSHR_SIZE    = 4,
+module banked_tlb_mshr #(
+    parameter  int unsigned MSHR_ENTRIES    = 4,
     parameter  int unsigned NUM_CORES    = 32,
     localparam int unsigned VPN_WIDTH    = mmu_pkg::VPN_WIDTH,
     localparam int unsigned PPN_WIDTH    = mmu_pkg::PPN_WIDTH,
     localparam int unsigned ASID_WIDTH   = mmu_pkg::ASID_WIDTH,
     localparam int unsigned LEVEL_BITS   = mmu_pkg::LEVEL_BITS,
-    localparam int unsigned TAG_W        = (MSHR_SIZE > 1) ? $clog2(MSHR_SIZE) : 1,
+    localparam int unsigned TAG_W        = (MSHR_ENTRIES > 1) ? $clog2(MSHR_ENTRIES) : 1,
     localparam int unsigned CORE_ID_SIZE = (NUM_CORES > 1) ? $clog2(NUM_CORES) : 1
 ) (
     input logic clk_i,
@@ -108,13 +108,13 @@ module l2_tlb_mshr #(
     endfunction
     /* verilator lint_on UNUSEDSIGNAL */
 
-    mshr_entry_t [MSHR_SIZE-1:0] mshr_entries;
+    mshr_entry_t [MSHR_ENTRIES-1:0] mshr_entries;
 
     // -------------------------------------------------------------------------
     // Deliver select (computed first: allocate.ready depends on deliver_fire)
     // -------------------------------------------------------------------------
-    logic        [MSHR_SIZE-1:0] deliver_pending;
-    for (genvar i = 0; i < MSHR_SIZE; i++) begin : g_deliver_pending
+    logic        [MSHR_ENTRIES-1:0] deliver_pending;
+    for (genvar i = 0; i < MSHR_ENTRIES; i++) begin : g_deliver_pending
         assign deliver_pending[i] = (mshr_entries[i].state == ES_CLEAN_PENDING_DELIVER)
                                  || (mshr_entries[i].state == ES_DIRTY_PENDING_DELIVER);
     end
@@ -122,7 +122,7 @@ module l2_tlb_mshr #(
     logic [TAG_W-1:0] deliver_id;
     logic             deliver_some;
     VX_priority_encoder #(
-        .N(MSHR_SIZE)
+        .N(MSHR_ENTRIES)
     ) deliver_sel (
         .data_in  (deliver_pending),
         .index_out(deliver_id),
@@ -145,8 +145,8 @@ module l2_tlb_mshr #(
     // -------------------------------------------------------------------------
     // Issue select: first *_PENDING_ISSUE slot
     // -------------------------------------------------------------------------
-    logic [MSHR_SIZE-1:0] pending_entries;
-    for (genvar i = 0; i < MSHR_SIZE; i++) begin : g_pending
+    logic [MSHR_ENTRIES-1:0] pending_entries;
+    for (genvar i = 0; i < MSHR_ENTRIES; i++) begin : g_pending
         assign pending_entries[i] = (mshr_entries[i].state == ES_CLEAN_PENDING_ISSUE)
                                    || (mshr_entries[i].state == ES_DIRTY_PENDING_ISSUE);
     end
@@ -154,7 +154,7 @@ module l2_tlb_mshr #(
     logic [TAG_W-1:0] issue_id;
     logic             issue_valid;
     VX_priority_encoder #(
-        .N(MSHR_SIZE)
+        .N(MSHR_ENTRIES)
     ) issue_sel (
         .data_in  (pending_entries),
         .index_out(issue_id),
@@ -187,7 +187,7 @@ module l2_tlb_mshr #(
     always_comb begin : g_cam
         hit_found    = 1'b0;
         hit_found_id = '0;
-        for (int i = 0; i < MSHR_SIZE; i++) begin
+        for (int i = 0; i < MSHR_ENTRIES; i++) begin
             if (!hit_found
                     && mshr_entries[i].state != ES_INVALID
                     && mshr_entries[i].vpn  == allocate_vpn_i
@@ -214,7 +214,7 @@ module l2_tlb_mshr #(
     wire release_fire = deliver_fire && deliver_terminal;
 
     VX_allocator #(
-        .SIZE(MSHR_SIZE)
+        .SIZE(MSHR_ENTRIES)
     ) allocator (
         .clk         (clk_i),
         .reset       (rst_i),
@@ -256,7 +256,7 @@ module l2_tlb_mshr #(
     // -------------------------------------------------------------------------
     always_ff @(posedge clk_i) begin
         if (rst_i) begin
-            for (int i = 0; i < MSHR_SIZE; i++) mshr_entries[i].state <= ES_INVALID;
+            for (int i = 0; i < MSHR_ENTRIES; i++) mshr_entries[i].state <= ES_INVALID;
         end else begin
             // Coalesce onto an existing slot
             if (coalesce_fire) begin

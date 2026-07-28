@@ -1,5 +1,5 @@
 /*
- * Copyright 2025 BSC*
+ * Copyright 2026 BSC*
  * *Barcelona Supercomputing Center (BSC)
  *
  * SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
@@ -52,9 +52,6 @@ module mmu #(
             .l2_if  (l1_l2_links[i*2])
         );
 
-        // TODO: coalesce core requests:
-        //       expensive to fit `NUM_DTLBS_PER_CORE` CAM in real GPU configuration.
-        //       NVIDIA has 32 threads per warp.
         l1_tlb #(
             .NUM_TLB_PORTS(NUM_DTLBS_PER_CORE),
             .TLB_ENTRIES  (L1_TLB_ENTRIES)
@@ -66,10 +63,10 @@ module mmu #(
         );
     end
 
-    l2_tlb_frontend #(
-        .NUM_REQS (2 * NUM_CORES),
-        .NUM_BANKS(4),
-        .NUM_PTWS (NUM_PTWS)
+    banked_tlb_frontend #(
+        .NUM_IN_REQS (2 * NUM_CORES),
+        .NUM_OUT_REQS (NUM_PTWS),
+        .NUM_BANKS(4)
     ) l2_tlb_frontend_inst (
         .clk_i   (clk_i),
         .rst_i   (rst_i),

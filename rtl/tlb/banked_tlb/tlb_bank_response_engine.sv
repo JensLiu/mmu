@@ -18,7 +18,7 @@
  * under the License.
  */
 
-module l2_tlb_bank_response_engine
+module tlb_bank_response_engine
     import mmu_pkg::*;
 #(
     parameter  int unsigned NUM_CORES = 32,

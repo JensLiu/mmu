@@ -18,14 +18,14 @@
  * under the License.
  */
 
-module l2_tlb_bank #(
+module tlb_bank #(
     parameter int unsigned SRC_W = 1,  // = LOG2UP(NUM_SRCS)
     parameter int unsigned NUM_SRCS = 2,  // requesters served by this bank
     parameter int unsigned NUM_TLB_SETS = 128,
     parameter int unsigned NUM_TLB_WAYS = 8,
-    parameter int unsigned MSHR_SIZE = 4,
+    parameter int unsigned MSHR_ENTRIES = 4,
     localparam int unsigned PTW_TAG_SLOT_WIDTH = mmu_pkg::PTW_TAG_SLOT_WIDTH,
-    localparam int unsigned MSHR_TAG_WIDTH = (MSHR_SIZE > 1) ? $clog2(MSHR_SIZE) : 1
+    localparam int unsigned MSHR_TAG_WIDTH = (MSHR_ENTRIES > 1) ? $clog2(MSHR_ENTRIES) : 1
 ) (
     input logic clk_i,
     input logic rst_i,
@@ -120,8 +120,8 @@ module l2_tlb_bank #(
     wire                            deliver_fire = deliver_valid && deliver_ready;
     wire                            alloc_valid = req_valid_i && !read_effective_hit;
 
-    l2_tlb_mshr #(
-        .MSHR_SIZE(MSHR_SIZE),
+    banked_tlb_mshr #(
+        .MSHR_ENTRIES(MSHR_ENTRIES),
         .NUM_CORES(NUM_SRCS)
     ) mshr (
         .clk_i                (clk_i),
@@ -174,7 +174,7 @@ module l2_tlb_bank #(
     end
 
     logic deliver_engine_hit_ready;
-    l2_tlb_bank_response_engine #(
+    tlb_bank_response_engine #(
         .NUM_CORES(NUM_SRCS)
     ) resp_engine (
         .clk_i               (clk_i),
